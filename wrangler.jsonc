@@ -1,0 +1,12 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "isthesunsetgood",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "."
+  },
+  "routes": [
+    { "pattern": "isthesunsetgood.ca", "custom_domain": true },
+    { "pattern": "www.isthesunsetgood.ca", "custom_domain": true }
+  ]
+}

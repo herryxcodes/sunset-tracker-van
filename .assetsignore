@@ -1,0 +1,11 @@
+.git
+.claude
+.DS_Store
+.gitignore
+.assetsignore
+wrangler.jsonc
+blender
+README.md
+CNAME
+.wrangler
+node_modules

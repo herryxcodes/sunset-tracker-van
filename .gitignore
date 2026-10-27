@@ -4,3 +4,5 @@ blender/landtest/
 blender/test/
 blender/*.png
 *.blend1
+.wrangler/
+node_modules/
