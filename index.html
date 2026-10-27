@@ -759,7 +759,7 @@ function drawDeck(deck, t, sun, L, W) {
   const g = offB.getContext("2d");
   g.globalCompositeOperation = "source-over"; g.globalAlpha = 1; g.clearRect(0, 0, Wd, Ht);
   const img = deck.img, pat = g.createPattern(img, "repeat");
-  const driftM = (t / 1000) * (L.wind_speed_10m || 8) / 3.6 * deck.wind;     // metres the deck has moved
+  const driftM = cloudClock * (L.wind_speed_10m || 8) / 3.6 * deck.wind;     // metres the deck has moved
   const top = V.hz / V.ppd + 1;
   let any = false;
   for (let a = .2; a < top;) {
@@ -1022,6 +1022,7 @@ function renderCine(t) {
 }
 
 /* ---------- State, loop and UI ---------- */
+let cloudClock = 0;   // seconds of cloud drift
 const state = {mode: reduceMotion ? "live" : "play", t: Date.now(), ev: null, win: [0, 1], speed: 8, last: performance.now()};
 const $ = id => document.getElementById(id);
 const compass = az => ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(az / 22.5) % 16];
@@ -1067,6 +1068,9 @@ function frame(nowPerf) {
   const dt = Math.min(.1, (nowPerf - state.last) / 1000); state.last = nowPerf;
   if (state.mode === "live") state.t = Date.now();
   else if (state.mode === "play") { state.t += dt * state.speed * MIN; if (state.t > state.win[1]) state.t = state.win[0]; }
+  // clouds keep their own clock: real time when live, a gentle 15x during the time-lapse whatever its speed (the time-lapse
+  // itself runs 240-960x, which sent them racing), and they do not jump when the timeline is scrubbed
+  if (!reduceMotion) cloudClock += dt * (state.mode === "live" ? 1 : state.mode === "play" ? 15 : 0);
   const r = cine.ready ? renderCine(state.t) : render(state.t);
   if (state.mode !== "live" || state.t >= state.win[0]) $("scrub").value = Math.round(clamp((state.t - state.win[0]) / (state.win[1] - state.win[0])) * 1000);
   $("hudTime").textContent = T(state.t);
