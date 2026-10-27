@@ -1,0 +1,97 @@
+# Renders the sky + English Bay water as seen from above the Inukshuk at English Bay, one frame per sun altitude.
+# Frames are in sun-relative azimuth (sun at rel 0) so the page can slide them to the true bearing.
+# Usage: Blender -b --factory-startup -P sky_frames.py -- OUTDIR PXPERDEG SAMPLES ALT[,ALT...] [disc]
+import bpy, math, sys, json, os
+
+argv = sys.argv[sys.argv.index("--") + 1:]
+OUT, PXD, SAMPLES = argv[0], float(argv[1]), int(argv[2])
+ALTS = [float(a) for a in argv[3].split(",")]
+DISC = len(argv) > 4 and argv[4] == "disc"
+REL0, REL1, ALT0, ALT1 = -100.0, 140.0, -16.0, 30.0  # sun-relative azimuth and altitude range (deg)
+
+os.makedirs(OUT, exist_ok=True)
+for o in list(bpy.data.objects): bpy.data.objects.remove(o, do_unlink=True)
+sc = bpy.context.scene
+sc.render.engine = "CYCLES"
+prefs = bpy.context.preferences.addons["cycles"].preferences
+prefs.compute_device_type = "METAL"; prefs.get_devices()
+for d in prefs.devices: d.use = d.type == "METAL"
+sc.cycles.device = "GPU"
+sc.cycles.samples = SAMPLES
+sc.cycles.use_denoising = True
+sc.cycles.max_bounces = 4
+sc.render.resolution_x = round((REL1 - REL0) * PXD)
+sc.render.resolution_y = round((ALT1 - ALT0) * PXD)
+sc.render.resolution_percentage = 100
+sc.render.image_settings.file_format = "JPEG"
+sc.render.image_settings.quality = 88
+sc.view_settings.view_transform = "AgX"
+try: sc.view_settings.look = "AgX - Punchy"
+except Exception: pass
+
+# Camera: 12 m above the water (drone height over the Inukshuk point), equirectangular strip. Looks along +Y (the sun's bearing).
+cam_data = bpy.data.cameras.new("cam")
+cam_data.type = "PANO"
+cam_data.panorama_type = "EQUIRECTANGULAR"
+cam_data.longitude_min = math.radians(REL0); cam_data.longitude_max = math.radians(REL1)
+cam_data.latitude_min = math.radians(ALT0); cam_data.latitude_max = math.radians(ALT1)
+cam_data.clip_end = 300000  # see the water all the way to the horizon
+cam = bpy.data.objects.new("cam", cam_data)
+cam.location = (0, 0, 12.0)
+cam.rotation_euler = (math.radians(90), 0, 0)
+sc.collection.objects.link(cam); sc.camera = cam
+
+# Water: big plane with layered ripples, dark green-blue like English Bay.
+bpy.ops.mesh.primitive_plane_add(size=240000, location=(0, 0, 0))
+water = bpy.context.object
+mat = bpy.data.materials.new("water"); mat.use_nodes = True
+nt = mat.node_tree; N = nt.nodes; Lk = nt.links
+bsdf = N["Principled BSDF"]
+bsdf.inputs["Base Color"].default_value = (0.006, 0.016, 0.022, 1)
+bsdf.inputs["Roughness"].default_value = 0.06
+bsdf.inputs["IOR"].default_value = 1.333
+tc = N.new("ShaderNodeTexCoord")
+mp = N.new("ShaderNodeMapping"); mp.inputs["Scale"].default_value = (0.35, 1.0, 1.0)
+w1 = N.new("ShaderNodeTexNoise"); w1.inputs["Scale"].default_value = 0.6; w1.inputs["Detail"].default_value = 6; w1.inputs["Roughness"].default_value = 0.6
+w2 = N.new("ShaderNodeTexWave"); w2.inputs["Scale"].default_value = 0.08; w2.inputs["Distortion"].default_value = 6; w2.inputs["Detail"].default_value = 4
+add = N.new("ShaderNodeMath"); add.operation = "ADD"
+bump = N.new("ShaderNodeBump"); bump.inputs["Strength"].default_value = 0.35; bump.inputs["Distance"].default_value = 0.08
+Lk.new(tc.outputs["Object"], mp.inputs["Vector"])
+Lk.new(mp.outputs["Vector"], w1.inputs["Vector"]); Lk.new(mp.outputs["Vector"], w2.inputs["Vector"])
+Lk.new(w1.outputs["Fac"], add.inputs[0]); Lk.new(w2.outputs["Fac"], add.inputs[1])
+Lk.new(add.outputs["Value"], bump.inputs["Height"]); Lk.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+water.data.materials.append(mat)
+
+# Sky
+world = bpy.data.worlds.new("sky"); sc.world = world; world.use_nodes = True
+wn = world.node_tree.nodes; wl = world.node_tree.links
+sky = wn.new("ShaderNodeTexSky")
+sky.sky_type = "MULTIPLE_SCATTERING"
+sky.sun_disc = DISC
+sky.altitude = 2.0
+sky.air_density = 1.0
+sky.aerosol_density = 1.25  # coastal marine haze
+sky.ozone_density = 1.0
+sky.sun_rotation = 0.0
+wl.new(sky.outputs["Color"], wn["Background"].inputs["Color"])
+
+def EV(alt):
+    pts = [(-14, 3.4), (-9, 2.6), (-6, 1.6), (-3, 0.2), (0, -2.2), (3, -3.6), (8, -4.4), (15, -5.0), (30, -5.3)]
+    if alt <= pts[0][0]: return pts[0][1]
+    for (a0, e0), (a1, e1) in zip(pts, pts[1:]):
+        if alt <= a1: return e0 + (e1 - e0) * (alt - a0) / (a1 - a0)
+    return pts[-1][1]
+
+meta = {}
+for alt in ALTS:
+    sky.sun_elevation = math.radians(alt)
+    # Auto-exposure like a camera operator riding the iris through dusk
+    ev = EV(alt)
+    sc.view_settings.exposure = ev
+    name = f"sky_{alt:+.1f}.jpg".replace("+", "p").replace("-", "m")
+    sc.render.filepath = os.path.join(OUT, name)
+    bpy.ops.render.render(write_still=True)
+    meta[name] = {"alt": alt, "exposure": ev}
+    print("RENDERED", name, flush=True)
+json.dump({"rel": [REL0, REL1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "frames": meta},
+          open(os.path.join(OUT, "sky_meta.json"), "w"), indent=1)

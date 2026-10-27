@@ -1,0 +1,6 @@
+.claude/
+.DS_Store
+blender/landtest/
+blender/test/
+blender/*.png
+*.blend1

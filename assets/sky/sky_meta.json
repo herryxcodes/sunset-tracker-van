@@ -1,0 +1,121 @@
+{
+ "rel": [
+  -100.0,
+  140.0
+ ],
+ "alt": [
+  -16.0,
+  30.0
+ ],
+ "pxPerDeg": 16.0,
+ "frames": {
+  "sky_p30.0.jpg": {
+   "alt": 30.0,
+   "exposure": -5.3
+  },
+  "sky_p24.0.jpg": {
+   "alt": 24.0,
+   "exposure": -5.18
+  },
+  "sky_p19.0.jpg": {
+   "alt": 19.0,
+   "exposure": -5.08
+  },
+  "sky_p15.0.jpg": {
+   "alt": 15.0,
+   "exposure": -5.0
+  },
+  "sky_p12.0.jpg": {
+   "alt": 12.0,
+   "exposure": -4.742857142857143
+  },
+  "sky_p10.0.jpg": {
+   "alt": 10.0,
+   "exposure": -4.571428571428572
+  },
+  "sky_p8.0.jpg": {
+   "alt": 8.0,
+   "exposure": -4.4
+  },
+  "sky_p6.5.jpg": {
+   "alt": 6.5,
+   "exposure": -4.16
+  },
+  "sky_p5.0.jpg": {
+   "alt": 5.0,
+   "exposure": -3.9200000000000004
+  },
+  "sky_p4.0.jpg": {
+   "alt": 4.0,
+   "exposure": -3.7600000000000002
+  },
+  "sky_p3.0.jpg": {
+   "alt": 3.0,
+   "exposure": -3.5999999999999996
+  },
+  "sky_p2.2.jpg": {
+   "alt": 2.25,
+   "exposure": -3.25
+  },
+  "sky_p1.5.jpg": {
+   "alt": 1.5,
+   "exposure": -2.9
+  },
+  "sky_p0.8.jpg": {
+   "alt": 0.75,
+   "exposure": -2.5500000000000003
+  },
+  "sky_p0.0.jpg": {
+   "alt": 0.0,
+   "exposure": -2.2
+  },
+  "sky_m0.8.jpg": {
+   "alt": -0.75,
+   "exposure": -1.6
+  },
+  "sky_m1.5.jpg": {
+   "alt": -1.5,
+   "exposure": -1.0000000000000002
+  },
+  "sky_m2.2.jpg": {
+   "alt": -2.25,
+   "exposure": -0.4000000000000001
+  },
+  "sky_m3.0.jpg": {
+   "alt": -3.0,
+   "exposure": 0.19999999999999996
+  },
+  "sky_m4.0.jpg": {
+   "alt": -4.0,
+   "exposure": 0.6666666666666666
+  },
+  "sky_m5.0.jpg": {
+   "alt": -5.0,
+   "exposure": 1.1333333333333333
+  },
+  "sky_m6.0.jpg": {
+   "alt": -6.0,
+   "exposure": 1.6
+  },
+  "sky_m7.0.jpg": {
+   "alt": -7.0,
+   "exposure": 1.9333333333333336
+  },
+  "sky_m8.5.jpg": {
+   "alt": -8.5,
+   "exposure": 2.4333333333333336
+  },
+  "sky_m10.0.jpg": {
+   "alt": -10.0,
+   "exposure": 2.76
+  },
+  "sky_m12.0.jpg": {
+   "alt": -12.0,
+   "exposure": 3.08
+  },
+  "sky_m15.0.jpg": {
+   "alt": -15.0,
+   "exposure": 3.4
+  }
+ }
+}
