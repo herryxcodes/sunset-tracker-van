@@ -35,7 +35,9 @@ blender -b --factory-startup -P blender/clouds.py -- assets/clouds
 `land.py` turns that grid into a 2-million-face terrain mesh around the hand-built foreground (`fg_ebay.py`, the Inukshuk point) and
 Stanley Park (`sp_ebay.py`), adds the West End and Coal Harbour from survey data (`city_ebay.py`: City of Vancouver building
 footprints with LiDAR heights, OpenStreetMap towers built since 2009, and the City's public trees), and renders the skylit scenery, a haze-distance layer and direct sunlight for 56 sun positions; the page
-tints that sunlight by the air mass and the forecast aerosol depth. The sky frames are in sun-relative azimuth, so the page slides them
+tints that sunlight by the air mass and the forecast aerosol depth. `clouds.py` renders 18 volumetric clouds (cumulus heaps, altocumulus,
+cirrocumulus patches) under skylight and three sun directions; the page scatters them over each cloud deck by the forecast
+cover, drifts them with the wind and lights them for the sun's position. The sky frames are in sun-relative azimuth, so the page slides them
 to the sun's true bearing for any day of the year.
 
 Buildings and trees: City of Vancouver Open Data, Open Government Licence – Vancouver; © OpenStreetMap contributors, ODbL.

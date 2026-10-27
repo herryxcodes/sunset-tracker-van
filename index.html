@@ -250,9 +250,9 @@ function terrain(az) {
 
 /* ---------- Weather ---------- */
 let WX = null, AQ = null;
-const FIELDS = ["temperature_2m","relative_humidity_2m","precipitation_probability","precipitation","weather_code","cloud_cover","cloud_cover_low","cloud_cover_mid","cloud_cover_high","visibility","wind_speed_10m"];
+const FIELDS = ["temperature_2m","relative_humidity_2m","precipitation_probability","precipitation","weather_code","cloud_cover","cloud_cover_low","cloud_cover_mid","cloud_cover_high","visibility","wind_speed_10m","wind_direction_10m"];
 const DEFAULT_WX = {temperature_2m: null, relative_humidity_2m: 70, precipitation_probability: 0, precipitation: 0, weather_code: 0,
-  cloud_cover: 0, cloud_cover_low: 0, cloud_cover_mid: 0, cloud_cover_high: 0, visibility: 30000, wind_speed_10m: 5};
+  cloud_cover: 0, cloud_cover_low: 0, cloud_cover_mid: 0, cloud_cover_high: 0, visibility: 30000, wind_speed_10m: 5, wind_direction_10m: 250};
 
 async function loadWeather() {
   const base = "https://api.open-meteo.com/v1/forecast?latitude=" + SITE.lat + "," + WESTPT.lat + "&longitude=" + SITE.lon + "," + WESTPT.lon +
@@ -647,7 +647,7 @@ function render(t) {
    assets/land/*.webp    scenery at true bearings 200..400, altitude -16..20, 24 px/deg: skylit colour and haze alpha,
                          plus sun/*.webp, direct sunlight for a grid of sun positions at 12 px/deg (see land_meta.json)
    assets/land/horizon.json  the skyline traced through the elevation model
-   assets/clouds/*.webp cloud density textures, tinted here by the live sun and forecast */
+   assets/clouds/*      volumetric cloud sprites under four lights, scattered and lit here from the forecast (see clouds.json) */
 const SKYF = [[-15,"m15.0"],[-12,"m12.0"],[-10,"m10.0"],[-8.5,"m8.5"],[-7,"m7.0"],[-6,"m6.0"],[-5,"m5.0"],[-4,"m4.0"],[-3,"m3.0"],
   [-2.25,"m2.2"],[-1.5,"m1.5"],[-.75,"m0.8"],[0,"p0.0"],[.75,"p0.8"],[1.5,"p1.5"],[2.25,"p2.2"],[3,"p3.0"],[4,"p4.0"],[5,"p5.0"],
   [6.5,"p6.5"],[8,"p8.0"],[10,"p10.0"],[12,"p12.0"],[15,"p15.0"],[19,"p19.0"],[24,"p24.0"],[30,"p30.0"]]
@@ -693,10 +693,10 @@ function sunLayers(az, app) {
 }
 const SKYI = {rel0: -100, alt1: 30, ppd: 16, w: 3840, h: 736};
 const LANDI = {az0: 200, alt1: 20, ppd: 24, w: 4800, h: 864};   // replaced by land_meta.json once loaded
-const DECKS = [ // cloud base height (m), metres per texture pixel, wind multiplier
-  {key: "cloud_cover_high", src: "assets/clouds/cloud_high.webp", h: 9000, mpp: 30, wind: 3},
-  {key: "cloud_cover_mid", src: "assets/clouds/cloud_mid.webp", h: 4000, mpp: 9, wind: 2},
-  {key: "cloud_cover_low", src: "assets/clouds/cloud_low.webp", h: 1300, mpp: 5, wind: 1.3}];
+const DECKS = [ // cloud base height (m), sprite kind, angular width of one cloud (rad), wind multiplier at that height
+  {key: "cloud_cover_high", kind: "high", h: 9000, ang: .22, wind: 3},
+  {key: "cloud_cover_mid", kind: "mid", h: 4000, ang: .17, wind: 2},
+  {key: "cloud_cover_low", kind: "low", h: 1300, ang: .24, wind: 1.3}];
 // a deck keeps the sun until it sinks below that deck's own horizon (Earth radius 6371 km), plus refraction on the way in:
 // about 1.7 deg below the horizon at 1.3 km, 2.6 deg at 4 km and 3.6 deg at 9 km
 for (const d of DECKS) d.thr = -(Math.acos(6371e3 / (6371e3 + d.h)) / rad + .57);
@@ -709,7 +709,7 @@ async function loadCine() {
     cine.meta = await (await fetch("assets/land/land_meta.json")).json();
     [cine.land, cine.haze] = await Promise.all([loadImg("assets/land/land_ambient.webp"), loadImg("assets/land/land_haze.webp")]);
     Object.assign(LANDI, {az0: cine.meta.az[0], alt1: cine.meta.alt[1], ppd: cine.meta.pxPerDeg, w: cine.land.width, h: cine.land.height});
-    await Promise.all([...DECKS.map(async d => d.img = await loadImg(d.src)), ensureSky()]);
+    await Promise.all([loadCloudSprites(), ensureSky()]);
     if (!skySet) throw new Error("sky frames");
     if (state.ev) loadSunLayers(sunPos(state.win[0]).az, sunPos(state.win[1]).az);
     cine.ready = true;
@@ -754,44 +754,100 @@ function landBox() {
   const vb = viewBox();
   return [(vb.azL - LANDI.az0) * LANDI.ppd, (LANDI.alt1 - vb.altT) * LANDI.ppd, (vb.azR - vb.azL) * LANDI.ppd, (vb.altT - vb.altB) * LANDI.ppd];
 }
-function drawDeck(deck, t, sun, L, W) {
-  if (Math.max(L[deck.key], W[deck.key]) < 2) return;
-  const g = offB.getContext("2d");
-  g.globalCompositeOperation = "source-over"; g.globalAlpha = 1; g.clearRect(0, 0, Wd, Ht);
-  const img = deck.img, pat = g.createPattern(img, "repeat");
-  const driftM = cloudClock * (L.wind_speed_10m || 8) / 3.6 * deck.wind;     // metres the deck has moved
-  const top = V.hz / V.ppd + 1;
-  let any = false;
-  for (let a = .2; a < top;) {
-    const a2 = Math.min(top, a * 1.24 + .12);
-    const am = (a + a2) / 2, d = deck.h / Math.tan(am * rad);
-    const cov = lerp(W[deck.key], L[deck.key], clamp((am - 1.5) / 10)) / 100;
-    if (cov > .02) {
-      const dA = deck.h / Math.tan(a * rad), dB = deck.h / Math.tan(a2 * rad);
-      const sxk = V.ppd * deck.mpp / (rad * d), scrH = (a2 - a) * V.ppd, syk = scrH / ((dA - dB) / deck.mpp), y0 = cy(a2);
-      const e = -((driftM / deck.mpp) % img.width) * sxk - ((V.c * rad * d / deck.mpp) % img.width) * sxk + Wd / 2;
-      const fy = y0 - ((dB / deck.mpp) % img.height) * syk;
-      for (const [pass, shift, al] of [[0, 0, clamp(cov * 1.7)], [1, 731, clamp((cov - .45) * 2.2)]]) {
-        if (al <= .01) continue;
-        pat.setTransform(new DOMMatrix([sxk, 0, 0, syk, e + shift * sxk, fy + pass * 97 * syk]));
-        g.fillStyle = pat; g.globalAlpha = al; g.fillRect(0, y0, Wd, scrH + .6); any = true;
-      }
+/* ---------- Clouds: volumetric sprites (blender/clouds.py) scattered over each deck ----------
+   Each deck is a field of cloud instances on nested rings around the camera, every ring 1.5x further out with clouds 1.5x
+   bigger, so the sky stays evenly filled from overhead to the horizon. Each instance appears once the forecast cover passes
+   its own threshold, drifts with the wind, and is drawn at its true bearing, height and thickness. Lighting is rebuilt a
+   few times a second: skylight plus the sun from behind, in front or below, tinted by deckLight(). */
+const CS = {ready: false, meta: null, img: {}, lit: {}, key: ""};
+async function loadCloudSprites() {
+  CS.meta = await (await fetch("assets/clouds/clouds.json")).json();
+  const names = ["amb", "back", "front", "below", "alpha"];
+  const imgs = await Promise.all(names.map(n => loadImg(`assets/clouds/cloud_${n}.${n === "alpha" ? "webp" : "jpg"}`)));
+  names.forEach((n, i) => CS.img[n] = imgs[i]);
+  const [cw, ch] = CS.meta.cell;
+  for (const sp of CS.meta.sprites) sp.c = [0, 1, 2].map(() => { const c = document.createElement("canvas"); c.width = cw; c.height = ch; return c; });
+  CS.tmp = document.createElement("canvas"); CS.tmp.width = cw; CS.tmp.height = ch;
+  CS.ready = true;
+  buildCloudField(state.ev ? parseInt(state.ev.key.replace(/-/g, "")) % 100000 : 7);
+}
+function buildCloudField(seed) {
+  const R = rng(seed);
+  for (const d of DECKS) {
+    const r0 = d.h / Math.tan(28 * rad), q = 1.5, tiers = [];
+    for (let r = r0; r < 300000; r *= q) {
+      const L = 2.4 * r * Math.sqrt(q), sprites = CS.meta ? CS.meta.sprites.filter(s => s.kind === d.kind) : [];
+      const inst = [];
+      for (let k = 0; k < 300; k++) inst.push({x: (R() - .5) * L, y: (R() - .5) * L, u: R(), s: .7 + .6 * R(), sp: sprites[(R() * sprites.length) | 0], flip: R() < .5});
+      tiers.push({r, L, inst});
     }
-    a = a2;
+    d.tiers = tiers;
   }
-  if (!any) return;
-  // light the deck: warm where it faces the sun, unlit grey-blue elsewhere
-  g.globalAlpha = 1; g.globalCompositeOperation = "source-atop";
-  const grd = g.createLinearGradient(0, 0, Wd, 0);
-  for (let k = 0; k <= 8; k++) { const x = k / 8 * Wd, az = V.c + (x - Wd / 2) / V.ppd; grd.addColorStop(k / 8, css(cloudColour(sun, deck.thr, az, W.cloud_cover_low, deck.h, L.aod).c)); }
-  g.fillStyle = grd; g.fillRect(0, 0, Wd, Ht);
-  // distant cloud fades into the horizon haze
-  g.globalCompositeOperation = "destination-out";
-  const fade = g.createLinearGradient(0, cy(2.5), 0, cy(0));
-  fade.addColorStop(0, "rgba(0,0,0,0)"); fade.addColorStop(1, "rgba(0,0,0,.85)");
-  g.fillStyle = fade; g.fillRect(0, cy(2.5), Wd, cy(0) - cy(2.5) + 1);
-  g.globalCompositeOperation = "source-over";
-  ctx.drawImage(offB, 0, 0, Wd, Ht);
+}
+function relightClouds(sun, L, W) {
+  const show = DECKS.map(d => Math.max(L[d.key], W[d.key]) >= 2);
+  const key = [sun.app.toFixed(1), Math.round(sun.az / 2), (L.aod ?? .1).toFixed(2), Math.round(W.cloud_cover_low / 5), Math.round(overcastOf(L) * 20), show].join();
+  const now = performance.now();
+  if (key === CS.key || now - (CS.at || 0) < 120) return;   // at most ~8 relights a second
+  CS.key = key; CS.at = now;
+  const below = clamp((1.5 - sun.app) / 2.5), side = 1 - below * .7;
+  const amb = keyed(UNLIT, sun.app)[0].map(v => Math.min(255, v * 1.12));
+  const BINS = [[1, 0], [.35, .45], [0, 1]];   // [back, front] weights: toward the sun, side-on, away from it
+  for (const [di, d] of DECKS.entries()) {
+    if (!show[di]) continue;
+    const lit = deckLight(sun.app, d.h, L.aod), ramp = clamp((sun.app - d.thr) / .6) * clamp((24 - sun.app) / 14 + .35);
+    const sunC = lit ? lit.map(v => v * ramp * (1 - W.cloud_cover_low / 100 * (d.kind === "low" ? .6 : .9)) * (1 - overcastOf(L) * .5)) : [0, 0, 0];
+    for (const sp of CS.meta.sprites) if (sp.kind === d.kind) sp.c.forEach((c, b) => {
+      const g = c.getContext("2d"), t = CS.tmp.getContext("2d");
+      g.globalCompositeOperation = "source-over"; g.globalAlpha = 1;
+      g.drawImage(CS.img.amb, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
+      g.globalCompositeOperation = "multiply"; g.fillStyle = css(amb); g.fillRect(0, 0, sp.w, sp.h);
+      for (const [pass, w] of [["back", BINS[b][0] * side], ["front", BINS[b][1] * side], ["below", below]]) {
+        if (w < .02 || !lit) continue;
+        t.globalCompositeOperation = "source-over"; t.drawImage(CS.img[pass], sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
+        t.globalCompositeOperation = "multiply"; t.fillStyle = css(sunC.map(v => v * w)); t.fillRect(0, 0, sp.w, sp.h);
+        g.globalCompositeOperation = "lighter"; g.drawImage(CS.tmp, 0, 0);
+      }
+      g.globalCompositeOperation = "destination-in"; g.drawImage(CS.img.alpha, sp.x, sp.y, sp.w, sp.h, 0, 0, sp.w, sp.h);
+    });
+  }
+}
+function drawDeck(deck, sun, L, W) {
+  if (!CS.ready || !deck.tiers || Math.max(L[deck.key], W[deck.key]) < 2) return;
+  const wdir = ((state.ev && state.ev.at.L.wind_direction_10m) ?? 250) * rad;     // the direction the wind blows from
+  const v = (L.wind_speed_10m || 8) / 3.6 * deck.wind * cloudClock, dx = -Math.sin(wdir) * v, dy = -Math.cos(wdir) * v;
+  const Lc = L[deck.key] / 100, Wc = W[deck.key] / 100, sq = Math.sqrt(1.5), dip = HZN ? HZN.dip : -.1;
+  const azL = V.c - Wd / 2 / V.ppd - 8, azR = V.c + Wd / 2 / V.ppd + 8;
+  const [cw, ch] = CS.meta.cell;
+  for (let k = deck.tiers.length - 1; k >= 0; k--) {
+    const T = deck.tiers[k], list = [];
+    for (const c of T.inst) {
+      let x = c.x + dx, y = c.y + dy;
+      x -= T.L * Math.round(x / T.L); y -= T.L * Math.round(y / T.L);       // wrap round this ring's tile
+      const r = Math.hypot(x, y), tb = Math.log(r / T.r) / Math.log(sq);   // -1..1 across the ring
+      if (Math.abs(tb) > 1.3) continue;
+      let az = Math.atan2(x, y) / rad; az += 360 * Math.round((V.c - az) / 360);
+      if (az < azL || az > azR) continue;
+      const west = clamp(Math.cos((az - 260) * rad)) * clamp((r - 4000) / 50000);
+      const cov = lerp(Lc, Wc, west), a = clamp((cov - c.u) * 6) * clamp((1.3 - Math.abs(tb)) / .5);
+      if (a < .02) continue;
+      list.push([r, az, a, c, cov]);
+    }
+    list.sort((p, q) => q[0] - p[0]);
+    for (const [r, az, a, c, cov] of list) {
+      const wM = T.r * deck.ang * c.s * (.7 + .7 * cov), drop = .87 * r * r / 12742e3;
+      const eb = Math.atan((deck.h - 12 - drop) / r) / rad;                // the cloud base
+      const wpx = wM / r / rad * V.ppd, hpx = wpx * ch / cw;
+      const yb = cy(eb), x0 = cx(az) - wpx / 2, y0 = yb - c.sp.base * hpx;
+      if (x0 > Wd || x0 + wpx < 0 || y0 > cy(dip) || yb + hpx < 0) continue;
+      const fadeLow = clamp((eb - dip) / 1.2 + .15);                      // thinning into the horizon haze
+      const d = Math.abs(((az - sun.az + 540) % 360) - 180), bin = d < 35 ? 0 : d < 100 ? 1 : 2;
+      ctx.globalAlpha = a * fadeLow;
+      if (c.flip) { ctx.save(); ctx.translate(x0 + wpx, 0); ctx.scale(-1, 1); ctx.drawImage(c.sp.c[bin], 0, y0, wpx, hpx); ctx.restore(); }
+      else ctx.drawImage(c.sp.c[bin], x0, y0, wpx, hpx);
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 // Brightness of the sun's reflection seen at azimuth offset phi and depression d below the horizon (radians), relative units.
@@ -917,7 +973,7 @@ function renderCine(t) {
   const tt = performance.now() / 1000;
   if (sun.app > -.4 && !hidden && sunVis > .08 && onScreen) drawGlitter(sun, L, sunVis, tt);
   // clouds, high to low
-  for (const d of DECKS) drawDeck(d, t, sun, L, W);
+  if (CS.ready) { relightClouds(sun, L, W); for (const d of DECKS) drawDeck(d, sun, L, W); }
   // scenery: Blender shading x ambient light, then aerial perspective using the sky itself as the haze colour
   const fogA = clamp(Math.max((5000 - L.visibility) / 5000, isFog(L) ? .65 : 0));
   const g = offA.getContext("2d"), lb = landBox();
@@ -1040,6 +1096,7 @@ function selectEvening(key) {
   skyWant = skySetFor(state.ev.at.L.aod); ensureSky();
   loadSunLayers(sunPos(state.win[0]).az, sunPos(state.win[1]).az);
   CLOUDS = makeClouds(parseInt(key.replace(/-/g, "")) % 100000);
+  if (CS.ready) buildCloudField(parseInt(key.replace(/-/g, "")) % 100000);
   $("tkA").textContent = T(state.win[0]); $("tkB").textContent = T(state.win[1]);
   $("tkS").textContent = "sunset " + T(state.ev.sunset);
   resize();
