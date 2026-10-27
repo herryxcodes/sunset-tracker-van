@@ -1,12 +1,17 @@
 # Renders the sky + English Bay water as seen from above the Inukshuk at English Bay, one frame per sun altitude.
 # Frames are in sun-relative azimuth (sun at rel 0) so the page can slide them to the true bearing.
-# Usage: Blender -b --factory-startup -P sky_frames.py -- OUTDIR PXPERDEG SAMPLES ALT[,ALT...] [disc]
+# The sea curves away (Earth's curvature less refraction, k = 0.13), so its horizon dips 0.10 deg below level as seen from 12 m.
+# AEROSOL is the sky model's aerosol density: the page keeps one set per air-quality band (clean 0.5, typical 1.25, hazy 3).
+# Usage: Blender -b --factory-startup -P sky_frames.py -- OUTDIR PXPERDEG SAMPLES ALT[,ALT...] [AEROSOL] [disc]
 import bpy, math, sys, json, os
+import numpy as np
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 OUT, PXD, SAMPLES = argv[0], float(argv[1]), int(argv[2])
 ALTS = [float(a) for a in argv[3].split(",")]
-DISC = len(argv) > 4 and argv[4] == "disc"
+DISC = "disc" in argv[4:]
+AEROSOL = next((float(a) for a in argv[4:] if a != "disc"), 1.25)
+CAM_H, K_REFR = 12.0, 0.13
 REL0, REL1, ALT0, ALT1 = -100.0, 140.0, -16.0, 30.0  # sun-relative azimuth and altitude range (deg)
 
 os.makedirs(OUT, exist_ok=True)
@@ -37,13 +42,20 @@ cam_data.longitude_min = math.radians(REL0); cam_data.longitude_max = math.radia
 cam_data.latitude_min = math.radians(ALT0); cam_data.latitude_max = math.radians(ALT1)
 cam_data.clip_end = 300000  # see the water all the way to the horizon
 cam = bpy.data.objects.new("cam", cam_data)
-cam.location = (0, 0, 12.0)
+cam.location = (0, 0, CAM_H)
 cam.rotation_euler = (math.radians(90), 0, 0)
 sc.collection.objects.link(cam); sc.camera = cam
 
-# Water: big plane with layered ripples, dark green-blue like English Bay.
-bpy.ops.mesh.primitive_plane_add(size=240000, location=(0, 0, 0))
-water = bpy.context.object
+# Water: a curved disc out past the horizon (polar grid, finer near the camera) with layered ripples, dark green-blue like English Bay.
+pa = np.radians(np.arange(0, 360, 1.0)); pd = np.concatenate([[0.0], np.geomspace(2, 120000, 220)])
+gb, gd = np.meshgrid(pa, pd, indexing="ij")
+co = np.stack([gd * np.sin(gb), gd * np.cos(gb), -(1 - K_REFR) * gd * gd / (2 * 6371000.0)], -1).reshape(-1, 3)
+na, nd = gb.shape
+ii, jj = np.meshgrid(np.arange(na), np.arange(nd - 1), indexing="ij")
+faces = np.stack([ii * nd + jj, (ii + 1) % na * nd + jj, (ii + 1) % na * nd + jj + 1, ii * nd + jj + 1], -1).reshape(-1, 4)
+wm = bpy.data.meshes.new("water"); wm.from_pydata(co.tolist(), [], faces.tolist())
+for p in wm.polygons: p.use_smooth = True
+water = bpy.data.objects.new("water", wm); sc.collection.objects.link(water)
 mat = bpy.data.materials.new("water"); mat.use_nodes = True
 nt = mat.node_tree; N = nt.nodes; Lk = nt.links
 bsdf = N["Principled BSDF"]
@@ -68,9 +80,9 @@ wn = world.node_tree.nodes; wl = world.node_tree.links
 sky = wn.new("ShaderNodeTexSky")
 sky.sky_type = "MULTIPLE_SCATTERING"
 sky.sun_disc = DISC
-sky.altitude = 2.0
+sky.altitude = CAM_H   # metres
 sky.air_density = 1.0
-sky.aerosol_density = 1.25  # coastal marine haze
+sky.aerosol_density = AEROSOL
 sky.ozone_density = 1.0
 sky.sun_rotation = 0.0
 wl.new(sky.outputs["Color"], wn["Background"].inputs["Color"])
@@ -93,5 +105,5 @@ for alt in ALTS:
     bpy.ops.render.render(write_still=True)
     meta[name] = {"alt": alt, "exposure": ev}
     print("RENDERED", name, flush=True)
-json.dump({"rel": [REL0, REL1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "frames": meta},
+json.dump({"rel": [REL0, REL1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "aerosol": AEROSOL, "frames": meta},
           open(os.path.join(OUT, "sky_meta.json"), "w"), indent=1)

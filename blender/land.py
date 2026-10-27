@@ -1,13 +1,15 @@
-# Builds the fixed scenery seen from above the Inukshuk at English Bay (true compass bearings) and renders two layers:
-#   land_shade.webp  lit colour with alpha (terrain, freighters, the Inukshuk and its point, beach)
-#   land_haze.webp   white, alpha = aerial-perspective amount by distance (0 near, 1 far)
+# Builds the fixed scenery seen from above the Inukshuk at English Bay (true compass bearings) and renders its layers:
+#   land_ambient.webp  skylit colour with alpha (terrain, freighters, the Inukshuk and its point, beach)
+#   sun/*.webp         direct sunlight for a grid of sun positions (see below)
+#   land_haze.webp     white, alpha = aerial-perspective amount by distance (0 near, 1 far)
+# Run horizon.py first: the terrain comes from the Copernicus GLO-30 grid it writes to blender/cache/.
 # World axes: +Y north, +X east, metres. Camera 12 m above the rocks at Rock Balance Point, 68 m south-east of the Inukshuk.
-# Usage: Blender -b --factory-startup -P land.py -- OUTDIR PXPERDEG SAMPLES [haze]
+# Usage: Blender -b --factory-startup -P land.py -- OUTDIR PXPERDEG SAMPLES [all|ambient|sun|haze]
 import bpy, bmesh, math, sys, os, json, random
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 OUT, PXD, SAMPLES = argv[0], float(argv[1]), int(argv[2])
-HAZE_ONLY = len(argv) > 3 and argv[3] == "haze"   # re-render just the haze layer
+MODE = argv[3] if len(argv) > 3 else "all"   # all | ambient | sun | haze: render only that layer
 AZ0, AZ1, ALT0, ALT1 = 200.0, 400.0, -16.0, 8.0   # bearings past 360 wrap to the north-east
 os.makedirs(OUT, exist_ok=True)
 random.seed(4)
@@ -53,54 +55,61 @@ def material(name, rgb, rough=0.9, bump=0.0, scale=40.0):
         l.new(tx.outputs["Fac"], cr.inputs[0]); l.new(cr.outputs[2], b.inputs["Base Color"])
     return m
 
-# Ridges: angular profile from sea level (bearing, elevation deg) as surveyed from Sunset Beach, distance, depth,
-# tree spikes, and the bearing shift for this viewpoint ~0.5 km to the north-west
-RIDGES = [
-    ("Vancouver Island", 80000, 9000, 0, -0.3, [[244,0],[250,.12],[256,.28],[262,.4],[266,.56],[268,.6],[271,.42],[278,.36],[286,.3],[296,.26],[304,.2],[310,0]]),
-    ("Bowen Island", 20000, 3000, 12, -1.0, [[286,0],[289,.35],[293,.9],[297,1.5],[300,1.95],[303,2.1],[306,1.75],[309,1.3],[313,1.1],[318,1.3]]),
-    # North Shore from Lighthouse Park up to Black Mountain, Hollyburn and Strachan, then Crown and Grouse (peak bearings measured from this spot)
-    ("North Shore", 13000, 3500, 25, 0.0, [[299,0],[300.5,.4],[304,.7],[308,1.1],[312,1.6],[316,2.2],[320,2.9],[324,3.6],[328,4.5],[331,5.3],[334.5,6.0],
-        [337,5.6],[340,5.5],[343.4,5.6],[344.7,6.0],[347,5.0],[349,4.5],[352,4.4],[355,4.6],[358,4.9],[362,5.2],[366,5.5],[370,5.8],[374.6,6.0],[378,5.6],[383,6.1],[386,5.6],[390,5.0],[395,4.4],[400,3.9]]),
-    ("The Lions", 19500, 1500, 0, 0.0, [[346,4.0],[348.6,4.6],[349.5,5.15],[350.0,4.9],[350.5,4.95],[350.9,5.2],[351.8,4.7],[354,4.0]]),
-    ("Point Grey", 8000, 1500, 35, -3.5, [[196,.95],[205,.95],[214,.9],[220,.75],[226,.6],[233,.55],[240,.68],[247,.8],[254,.76],[259,.62],[262,.42],[264.5,.15],[266,0]]),
-]
-def prof(pts, a):
-    if a <= pts[0][0] or a >= pts[-1][0]: return 0.0
-    for (a0, h0), (a1, h1) in zip(pts, pts[1:]):
-        if a <= a1: return h0 + (h1 - h0) * (a - a0) / (a1 - a0)
-    return 0.0
+# Terrain: the real landscape from Point Grey round to the North Shore, Bowen, the Sunshine Coast, the Gulf Islands and
+# Vancouver Island, from the polar height grid horizon.py traces through the Copernicus GLO-30 surface model. Heights
+# are already lowered for the Earth's curvature (less refraction), so far ridges sit where the eye sees them.
+import numpy as np
+T = np.load(os.path.join(os.path.dirname(__file__), "cache", "terrain.npz"))
+GA, GD, GH, GZ, OWN = T["az"], T["dist"], T["h"], T["z"], T["own"]
+na, nd = GH.shape
+land = GH > 0.5
+bb, dd = np.meshgrid(np.radians(GA), GD, indexing="ij")
+zz = np.where(land, GZ, GZ - 3.0)          # sea cells dip under the water line so coasts slope into the sea
+co = np.stack([dd * np.sin(bb), dd * np.cos(bb), zz], -1).reshape(-1, 3)
+ii, jj = np.meshgrid(np.arange(na - 1), np.arange(nd - 1), indexing="ij")
+q = np.stack([ii * nd + jj, (ii + 1) * nd + jj, (ii + 1) * nd + jj + 1, ii * nd + jj + 1], -1).reshape(-1, 4)
+lf, of = land.ravel()[q], OWN.ravel()[q]
+q = q[lf.any(1) & ~of.any(1)]
+used, inv = np.unique(q, return_inverse=True)
+co, q = co[used], inv.reshape(-1, 4)
+me = bpy.data.meshes.new("terrain")
+me.vertices.add(len(co)); me.vertices.foreach_set("co", co.astype(np.float32).ravel())
+me.loops.add(q.size); me.loops.foreach_set("vertex_index", q.astype(np.int32).ravel())
+me.polygons.add(len(q)); me.polygons.foreach_set("loop_start", np.arange(0, q.size, 4, dtype=np.int32))
+me.update(); me.validate()
+# colour: coastal forest and towns low down, subalpine forest, then grey rock and scree on the high peaks
+h = GH.ravel()[used]
+c = np.empty((len(h), 4), np.float32); c[:, 3] = 1
+t = np.clip((h - 1300) / 500, 0, 1)[:, None]
+c[:, :3] = np.array([0.014, 0.022, 0.017]) * (1 - t) + np.array([0.07, 0.068, 0.065]) * t
+ca = me.color_attributes.new("Col", "FLOAT_COLOR", "POINT"); ca.data.foreach_set("color", c.ravel())
+for p in me.polygons: p.use_smooth = True
+def terrain_mat(n, l, b):
+    vc = n.new("ShaderNodeVertexColor"); vc.layer_name = "Col"
+    nz = n.new("ShaderNodeTexNoise"); nz.inputs["Scale"].default_value = 0.004; nz.inputs["Detail"].default_value = 8
+    mul = n.new("ShaderNodeMix"); mul.data_type = "RGBA"; mul.blend_type = "MULTIPLY"; mul.inputs[0].default_value = 0.35
+    l.new(vc.outputs["Color"], mul.inputs[6]); l.new(nz.outputs["Color"], mul.inputs[7]); l.new(mul.outputs[2], b.inputs["Base Color"])
+    b.inputs["Roughness"].default_value = 0.95
+tm = bpy.data.materials.new("terrain"); tm.use_nodes = True
+terrain_mat(tm.node_tree.nodes, tm.node_tree.links, tm.node_tree.nodes["Principled BSDF"])
+me.materials.append(tm); sc.collection.objects.link(bpy.data.objects.new("terrain", me))
+print("TERRAIN", len(co), "verts", len(q), "faces", flush=True)
 
-forest = material("forest", (0.012, 0.02, 0.016), 1.0)
-far = material("farhill", (0.03, 0.038, 0.04), 0.95, 0.3, 0.004)
-for name, D, depth, tree, shift, pts in RIDGES:
-    pts = [[a + shift, h] for a, h in pts]
-    a0, a1 = pts[0][0], pts[-1][0]
-    step = max(0.03, D / 2000000 * 3)  # finer columns for nearer ridges
-    cols = int((a1 - a0) / step) + 1
-    rows = [-1.0, -0.6, -0.25, 0.0, 0.35, 1.0]  # fraction of depth, 0 = crest line
-    bm = bmesh.new(); grid = []
-    phase = random.random() * 100
-    for ci in range(cols):
-        a = a0 + ci * step
-        H = H0 = D * math.tan(math.radians(prof(pts, a)))
-        if tree and H > 0:  # conifer skyline: irregular spikes on the crest only
-            k = (a * D * 0.01745 / 26.0 + phase)
-            spike = 1 - abs((k % 1) - 0.5) * 2
-            H += tree * (0.55 + 0.45 * math.sin(a * 37.1 + phase) * math.sin(a * 13.7)) * spike ** 1.3
-        sx, sy = bdir(a); col = []
-        for f in rows:
-            r = D + f * depth
-            base = H if f >= 0 else H0 + (H - H0) * 0.15
-            z = -2 if f == -1.0 else base * (1 - abs(f) ** 1.6 * (1.0 if f < 0 else 0.35))
-            col.append(bm.verts.new((sx * r, sy * r, z)))
-        grid.append(col)
-    for ci in range(cols - 1):
-        for ri in range(len(rows) - 1):
-            bm.faces.new((grid[ci][ri], grid[ci + 1][ri], grid[ci + 1][ri + 1], grid[ci][ri + 1]))
-    me = bpy.data.meshes.new(name); bm.to_mesh(me); bm.free()
-    ob = bpy.data.objects.new(name, me); sc.collection.objects.link(ob)
-    me.materials.append(far if D > 15000 else forest)
-    for p in me.polygons: p.use_smooth = True
+# The sea as a curved holdout: it cuts out anything below the true sea horizon (the page draws the water there),
+# so the feet of far islands drop out of sight as they do over a curving sea. It casts no shadows.
+SA = np.radians(np.arange(195, 406, 0.5)); SD = np.concatenate([[0.0], np.geomspace(5, 230000, 260)])
+sb, sd = np.meshgrid(SA, SD, indexing="ij")
+sco = np.stack([sd * np.sin(sb), sd * np.cos(sb), -(1 - T["k"]) * sd * sd / (2 * 6371000.0)], -1).reshape(-1, 3)
+nsa, nsd = sb.shape
+ii, jj = np.meshgrid(np.arange(nsa - 1), np.arange(nsd - 1), indexing="ij")
+sq = np.stack([ii * nsd + jj, (ii + 1) * nsd + jj, (ii + 1) * nsd + jj + 1, ii * nsd + jj + 1], -1).reshape(-1, 4)
+sm = bpy.data.meshes.new("sea"); sm.from_pydata(sco.tolist(), [], sq.tolist())
+hold = bpy.data.materials.new("sea_holdout"); hold.use_nodes = True
+hn = hold.node_tree.nodes
+for x in list(hn): hn.remove(x)
+hold.node_tree.links.new(hn.new("ShaderNodeHoldout").outputs[0], hn.new("ShaderNodeOutputMaterial").inputs["Surface"])
+sm.materials.append(hold)
+sea = bpy.data.objects.new("sea", sm); sea.visible_shadow = False; sc.collection.objects.link(sea)
 
 # Freighters at anchor in English Bay
 hull = material("hull", (0.035, 0.018, 0.016), 0.6)
@@ -122,15 +131,47 @@ for b, dist, L, head in [(258, 4200, 190, 30), (267, 5600, 225, 75), (276, 3800,
 exec(open(os.path.join(os.path.dirname(__file__), "fg_ebay.py")).read())
 exec(open(os.path.join(os.path.dirname(__file__), "sp_ebay.py")).read())   # Stanley Park, modelled in 3D
 
-# Daylight to shade the scenery: sun low in the WSW (backlit, as it is all afternoon from this beach)
+# Lighting is rendered in parts so the page can relight the scenery for any sun position and air quality:
+#   land_ambient.webp       skylight only (a white dome, darker below the horizon), no sun
+#   sun/sun_AZ_ALT.webp     direct sunlight only, white sun at compass bearing AZ and apparent altitude ALT, half resolution;
+#                           the page tints it with the transmittance along the sun's path and blends the nearest four
+# A curved Earth that only casts shadows lets the sun leave the beach first and then climb off the peaks after sunset.
+from mathutils import Vector
+SUN_AZ = [210, 225, 240, 255, 270, 285, 300, 315]
+SUN_ALT = [20, 8, 3, 1, 0, -0.5, -1.0]
+earth = bpy.data.objects.new("earth", sm.copy()); earth.location.z = -1.0; earth.visible_camera = False
+earth.data.materials.clear(); earth.data.materials.append(material("earth", (0.0, 0.0, 0.0), 1.0)); sc.collection.objects.link(earth)
 world = bpy.data.worlds.new("w"); sc.world = world; world.use_nodes = True
 wn = world.node_tree.nodes; wl = world.node_tree.links
-sky = wn.new("ShaderNodeTexSky"); sky.sky_type = "MULTIPLE_SCATTERING"; sky.sun_disc = True
-sky.sun_elevation = math.radians(22); sky.sun_rotation = math.radians(110); sky.aerosol_density = 1.25
-wl.new(sky.outputs["Color"], wn["Background"].inputs["Color"])
-sc.view_settings.exposure = -4.6
-sc.render.filepath = os.path.join(OUT, "land_shade.webp")
-if not HAZE_ONLY: bpy.ops.render.render(write_still=True); print("RENDERED shade", flush=True)
+tco = wn.new("ShaderNodeTexCoord"); sep = wn.new("ShaderNodeSeparateXYZ"); mr = wn.new("ShaderNodeMapRange")
+mr.inputs["From Min"].default_value = -0.05; mr.inputs["From Max"].default_value = 0.05
+mr.inputs["To Min"].default_value = 0.15; mr.inputs["To Max"].default_value = 1.0
+wl.new(tco.outputs["Generated"], sep.inputs[0]); wl.new(sep.outputs["Z"], mr.inputs["Value"])
+wl.new(mr.outputs["Result"], wn["Background"].inputs["Strength"])
+wn["Background"].inputs["Color"].default_value = (1, 1, 1, 1)
+sc.view_settings.view_transform = "Standard"; sc.view_settings.exposure = 0.6
+sc.render.filepath = os.path.join(OUT, "land_ambient.webp")
+if MODE in ("all", "ambient"): bpy.ops.render.render(write_still=True); print("RENDERED ambient", flush=True)
+
+sd = bpy.data.lights.new("sun", "SUN"); sd.energy = 8.0; sd.angle = math.radians(0.53)
+sun = bpy.data.objects.new("sun", sd); sc.collection.objects.link(sun)
+sun_keys = []
+if MODE in ("all", "sun"):
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0, 0, 0, 1)
+    sc.cycles.samples = max(8, SAMPLES // 4); sc.render.resolution_percentage = 50
+    os.makedirs(os.path.join(OUT, "sun"), exist_ok=True)
+    for az in SUN_AZ:
+        for alt in SUN_ALT:
+            e = math.radians(alt); to_sun = Vector((math.sin(math.radians(az)) * math.cos(e), math.cos(math.radians(az)) * math.cos(e), math.sin(e)))
+            sun.rotation_euler = (-to_sun).to_track_quat("-Z", "Y").to_euler()
+            sc.render.filepath = os.path.join(OUT, "sun", f"sun_{az}_{alt:+.1f}.webp".replace("+", "p").replace("-", "m"))
+            bpy.ops.render.render(write_still=True); print("RENDERED sun", az, alt, flush=True)
+    sc.render.resolution_percentage = 100
+sun.hide_render = True
+
+json.dump({"az": [AZ0, AZ1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "cameraHeight": CAMH, "inukshukBearing": INUK_BEARING,
+           "sunAz": SUN_AZ, "sunAlt": SUN_ALT, "sunScale": 0.5},
+          open(os.path.join(OUT, "land_meta.json"), "w"), indent=1)
 
 # Haze pass: solid emission = 1 - exp(-distance / 14 km), rendered linear to EXR, then moved into the alpha channel
 # (a see-through haze material would let far objects' haze leak into near ones)
@@ -143,20 +184,18 @@ em = n.new("ShaderNodeEmission"); outm = n.new("ShaderNodeOutputMaterial")
 l.new(camd.outputs["View Distance"], m1.inputs[0]); l.new(m1.outputs[0], ex.inputs[0]); l.new(ex.outputs[0], inv.inputs[1])
 l.new(inv.outputs[0], em.inputs["Color"]); l.new(em.outputs[0], outm.inputs["Surface"])
 for ob in sc.objects:
-    if ob.type == "MESH":
+    if ob.type == "MESH" and ob.name != "sea":
         ob.data.materials.clear(); ob.data.materials.append(hz)
-wn["Background"].inputs["Strength"].default_value = 0
+wl.remove(wn["Background"].inputs["Strength"].links[0]); wn["Background"].inputs["Strength"].default_value = 0
 sc.view_settings.view_transform = "Standard"; sc.view_settings.exposure = 0
 sc.cycles.samples = 16
 sc.render.image_settings.file_format = "OPEN_EXR"; sc.render.image_settings.color_mode = "RGBA"
 tmp = os.path.join(OUT, "_haze.exr"); sc.render.filepath = tmp
+if MODE not in ("all", "haze"): sys.exit(0)
 bpy.ops.render.render(write_still=True)
-import numpy as np
 src = bpy.data.images.load(tmp); w, h = src.size
 px = np.array(src.pixels[:], dtype=np.float32).reshape(h, w, 4)
 outpx = np.ones_like(px); outpx[..., 3] = np.clip(px[..., 0], 0, 1) * px[..., 3]
 dst = bpy.data.images.new("haze", w, h, alpha=True); dst.pixels = outpx.ravel()
 dst.filepath_raw = os.path.join(OUT, "land_haze.webp"); dst.file_format = "WEBP"; dst.save()
 os.remove(tmp); print("RENDERED haze", flush=True)
-json.dump({"az": [AZ0, AZ1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "cameraHeight": CAMH, "inukshukBearing": INUK_BEARING},
-          open(os.path.join(OUT, "land_meta.json"), "w"), indent=1)

@@ -147,9 +147,12 @@ dd em{font-style:normal;color:var(--muted)}
   <p class="note">
     The view is from about 12 m above Rock Balance Point, looking past the Inukshuk to Stanley Park and the North Shore, with the shoreline
     traced from satellite imagery. Drag the scene to look around; double-click to recentre.
-    The sky, sea and scenery are rendered in Blender, and the sun position is computed live in your browser. Point Grey, Vancouver Island,
-    Bowen Island, the North Shore and Stanley Park follow a hand-measured horizon profile, so times when the sun dips behind them can be
-    off by a minute or two. Clouds, rain, fog and haze come from the <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> forecast for
+    The sky, sea and scenery are rendered in Blender, and the sun position is computed live in your browser. The horizon (Point Grey,
+    Vancouver Island, Bowen Island, the Sunshine Coast and the North Shore) is traced from the Copernicus 30 m surface model, trees
+    included, allowing for the Earth's curvature and refraction, so the moment the sun drops behind it should be right to within a minute.
+    The land is relit for the sun's true position, and the sky and the sun's colour follow the forecast aerosol haze.
+    Elevation: Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018, provided under COPERNICUS
+    by the European Union and ESA; all rights reserved. Clouds, rain, fog and haze come from the <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> forecast for
     the beach and for a point about 60 km west over the Strait of Georgia. That western point decides whether low cloud blocks the light.
     The score rewards some high and mid cloud, a clear western horizon, dry air and good visibility. The data refreshes every 15 minutes.
     <span id="updated"></span>
@@ -231,7 +234,13 @@ function ridgeAlt(r, az) {
   }
   return 0;
 }
+let HZN = null;   // traced skyline from assets/land/horizon.json: apparent altitude every 0.05 deg of bearing, sea horizon included
+fetch("assets/land/horizon.json").then(r => r.ok ? r.json() : null).then(j => { if (j) { HZN = j; buildDays(); refreshPanels(); } }).catch(() => {});
 function terrain(az) {
+  if (HZN) {
+    const a = az < HZN.az0 ? az + 360 : az, i = clamp(Math.round((a - HZN.az0) / HZN.step), 0, HZN.alt.length - 1);
+    return {h: HZN.alt[i], name: HZN.names[HZN.name[i]]};
+  }
   let best = 0, name = null;
   for (const r of RIDGES) { const h = ridgeAlt(r, az); if (h > best) { best = h; name = r.name; } }
   return {h: best, name};
@@ -357,6 +366,28 @@ const SKY = [ // sun altitude: zenith, mid, horizon, glow
 const UNLIT = [[-14,"#0d1124"],[-6,"#2c3150"],[-2,"#565876"],[2,"#9597ab"],[10,"#d6dae3"],[30,"#f1f3f6"]];
 const LIT = [[0,"#a8325a"],[1,"#e0466a"],[2.5,"#f5683a"],[5,"#ff9a45"],[9,"#ffc878"],[15,"#fff0d8"]];
 const SUNC = [[-1,"#ff4a20"],[1,"#ff6a2c"],[4,"#ffb055"],[10,"#ffe0a0"],[25,"#fff8e8"]];
+// Direct sunlight through the air: Beer-Lambert with Rayleigh and aerosol optical depth (Angstrom exponent 1.3) at
+// 640 / 550 / 450 nm and the Kasten-Young air mass, white-balanced to the sun at 30 degrees on a typical day (AOD 0.1).
+function transmit(app, aod) {
+  const h = Math.max(app, 0), m = 1 / (Math.sin(h * rad) + .50572 * (h + 6.07995) ** -1.6364), a = aod ?? .1;
+  return [[.052, .79], [.097, 1], [.21, 1.31]].map(([r, k]) => Math.exp(-m * (r + a * k)));
+}
+const WB = transmit(30, .1);
+const toSRGB = v => 255 * (v <= .0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - .055);
+function sunColour(app, aod) {   // colour of the disc itself: the transmitted light, normalised
+  const t = transmit(app, aod).map((v, i) => v / WB[i]), k = Math.max(...t);
+  return t.map(v => toSRGB(v / k));
+}
+function sunLight(app, aod) {    // light falling on the scenery, scaled by the camera's exposure through dusk
+  const ev = keyedNum([[-14, 3.4], [-9, 2.6], [-6, 1.6], [-3, .2], [0, -2.2], [3, -3.6], [8, -4.4], [15, -5], [30, -5.3]], app);
+  const expo = 2 ** (ev + 5.1);
+  return transmit(app, aod).map((v, i) => clamp(v / WB[i] * expo * 1.25));
+}
+function keyedNum(pts, x) {
+  if (x <= pts[0][0]) return pts[0][1];
+  for (let i = 1; i < pts.length; i++) if (x <= pts[i][0]) return lerp(pts[i - 1][1], pts[i][1], (x - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]));
+  return pts[pts.length - 1][1];
+}
 
 function overcastOf(L) { return clamp(Math.max(L.cloud_cover_low, L.cloud_cover_mid * .85, L.cloud_cover * .6) / 100); }
 function skyColours(sun, L, W = L) { // overhead greying follows the beach, horizon greying follows the west
@@ -377,7 +408,7 @@ function cloudColour(sun, thr, az, westLow) {
 
 /* ---------- Scene ---------- */
 const cvs = document.getElementById("sky"), ctx = cvs.getContext("2d");
-const offA = document.createElement("canvas"), offB = document.createElement("canvas");
+const offA = document.createElement("canvas"), offB = document.createElement("canvas"), offC = document.createElement("canvas");
 let Wd = 0, Ht = 0, HZ = 0, DPR = 1, AZ0 = 212, AZ1 = 338, S = 1;
 const MAXALT = 48, C0 = 3;
 function resize() {
@@ -385,7 +416,7 @@ function resize() {
   DPR = Math.min(1.5, window.devicePixelRatio || 1);
   Wd = w; Ht = Math.round(clamp(w * .4, 240, 520));
   cvs.width = Math.round(Wd * DPR); cvs.height = Math.round(Ht * DPR); cvs.style.height = Ht + "px";
-  for (const c of [offA, offB]) { c.width = cvs.width; c.height = cvs.height; c.getContext("2d").setTransform(DPR, 0, 0, DPR, 0, 0); }
+  for (const c of [offA, offB, offC]) { c.width = cvs.width; c.height = cvs.height; c.getContext("2d").setTransform(DPR, 0, 0, DPR, 0, 0); }
   HZ = Ht * .70;
   S = (HZ - Ht * .05) / Math.log(1 + MAXALT / C0);
   const fov = clamp(Wd / 8.2, 74, 126);
@@ -592,29 +623,74 @@ function render(t) {
 }
 
 /* ---------- Cinematic renderer: Blender-rendered sky, sea, scenery and cloud textures ----------
-   assets/sky/*.jpg   sky + English Bay per sun altitude, sun-relative azimuth -60..110, altitude -10..30, 16 px/deg
-   assets/land/*.webp scenery at true bearings 200..350, altitude -10..7, 24 px/deg (shade + haze alpha)
+   assets/sky/SET/*.jpg  sky + curved sea per sun altitude for clean / typical / hazy air, sun-relative azimuth -100..140, altitude -16..30, 16 px/deg
+   assets/land/*.webp    scenery at true bearings 200..400, altitude -16..8, 24 px/deg: skylit colour and haze alpha,
+                         plus sun/*.webp, direct sunlight for a grid of sun positions at 12 px/deg (see land_meta.json)
+   assets/land/horizon.json  the skyline traced through the elevation model
    assets/clouds/*.webp cloud density textures, tinted here by the live sun and forecast */
 const SKYF = [[-15,"m15.0"],[-12,"m12.0"],[-10,"m10.0"],[-8.5,"m8.5"],[-7,"m7.0"],[-6,"m6.0"],[-5,"m5.0"],[-4,"m4.0"],[-3,"m3.0"],
   [-2.25,"m2.2"],[-1.5,"m1.5"],[-.75,"m0.8"],[0,"p0.0"],[.75,"p0.8"],[1.5,"p1.5"],[2.25,"p2.2"],[3,"p3.0"],[4,"p4.0"],[5,"p5.0"],
   [6.5,"p6.5"],[8,"p8.0"],[10,"p10.0"],[12,"p12.0"],[15,"p15.0"],[19,"p19.0"],[24,"p24.0"],[30,"p30.0"]]
-  .map(([alt, n]) => ({alt, src: `assets/sky/sky_${n}.jpg`, img: null}));
+  .map(([alt, n]) => ({alt, n, img: null}));
+// three renders of the sky with clean, typical and hazy air; the evening's forecast aerosol depth picks one
+const skySetFor = aod => aod == null ? "typical" : aod < .08 ? "clean" : aod < .25 ? "typical" : "hazy";
+let skySet = null, skyWant = "typical", skyJob = null;
+function ensureSky() {
+  if (skyJob || skySet === skyWant) return skyJob || Promise.resolve();
+  const set = skyWant;
+  skyJob = (async () => {
+    try {
+      const now = sunPos(Date.now()).alt;
+      const order = SKYF.slice().sort((a, b) => Math.abs(a.alt - now) - Math.abs(b.alt - now));
+      const imgs = await Promise.all(order.map(f => loadImg(`assets/sky/${set}/sky_${f.n}.jpg`)));
+      order.forEach((f, i) => f.img = imgs[i]); skySet = set;   // swap the whole set at once
+    } catch (e) { console.warn("Sky frames missing", e.message); }
+  })().then(() => { skyJob = null; if (skySet && skySet !== skyWant) ensureSky(); });
+  return skyJob;
+}
+// direct-sunlight renders (sun/sun_AZ_ALT.webp): the four nearest the sun's position, with bilinear weights
+const sunKey = (az, alt) => `sun_${az}_${alt >= 0 ? "p" : "m"}${Math.abs(alt).toFixed(1)}`;
+function loadSunLayers(az0, az1) {   // fetch every altitude for the bearings the sun crosses between az0 and az1
+  const M = cine.meta; if (!M) return;
+  for (const az of M.sunAz) if (az >= az0 - 15 && az <= az1 + 15) for (const alt of M.sunAlt) {
+    const k = sunKey(az, alt);
+    if (!(k in cine.sun)) { cine.sun[k] = null; loadImg(`assets/land/sun/${k}.webp`).then(i => cine.sun[k] = i).catch(() => {}); }
+  }
+}
+function sunLayers(az, app) {
+  const M = cine.meta, A = M.sunAz, H = M.sunAlt;   // bearings ascending, altitudes descending
+  if (app <= H[H.length - 1]) return [];
+  const bz = clamp(az, A[0], A[A.length - 1]), ba = Math.min(app, H[0]);
+  let i = 0; while (i < A.length - 2 && A[i + 1] < bz) i++;
+  let j = 0; while (j < H.length - 2 && H[j + 1] > ba) j++;
+  const fa = clamp((bz - A[i]) / (A[i + 1] - A[i])), fh = clamp((H[j] - ba) / (H[j] - H[j + 1]));
+  const out = [];
+  for (const [a, wa] of [[A[i], 1 - fa], [A[i + 1], fa]]) for (const [h, wh] of [[H[j], 1 - fh], [H[j + 1], fh]]) {
+    const img = cine.sun[sunKey(a, h)];
+    if (wa * wh > .005 && img) out.push([img, wa * wh]);
+  }
+  return out;
+}
 const SKYI = {rel0: -100, alt1: 30, ppd: 16, w: 3840, h: 736};
 const LANDI = {az0: 200, alt1: 8, ppd: 24, w: 4800, h: 576};
-const DECKS = [ // cloud base height (m), metres per texture pixel, wind multiplier, shadow threshold for sunlight
-  {key: "cloud_cover_high", src: "assets/clouds/cloud_high.webp", h: 9000, mpp: 30, wind: 3, thr: -4.5},
-  {key: "cloud_cover_mid", src: "assets/clouds/cloud_mid.webp", h: 4000, mpp: 9, wind: 2, thr: -2},
-  {key: "cloud_cover_low", src: "assets/clouds/cloud_low.webp", h: 1300, mpp: 5, wind: 1.3, thr: -1}];
+const DECKS = [ // cloud base height (m), metres per texture pixel, wind multiplier
+  {key: "cloud_cover_high", src: "assets/clouds/cloud_high.webp", h: 9000, mpp: 30, wind: 3},
+  {key: "cloud_cover_mid", src: "assets/clouds/cloud_mid.webp", h: 4000, mpp: 9, wind: 2},
+  {key: "cloud_cover_low", src: "assets/clouds/cloud_low.webp", h: 1300, mpp: 5, wind: 1.3}];
+// a deck keeps the sun until it sinks below that deck's own horizon (Earth radius 6371 km), plus refraction on the way in:
+// about 1.7 deg below the horizon at 1.3 km, 2.6 deg at 4 km and 3.6 deg at 9 km
+for (const d of DECKS) d.thr = -(Math.acos(6371e3 / (6371e3 + d.h)) / rad + .57);
 const AMBIENT = [[-14,"#14172a"],[-7,"#2f2d48"],[-3,"#5b4c62"],[0,"#946f66"],[3,"#cf9a7c"],[8,"#ecd0b6"],[20,"#fff8f0"]];
-const cine = {ready: false, land: null, haze: null};
+const cine = {ready: false, land: null, haze: null, sun: {}, meta: null};
 const V = {ppd: 10, c: 270, hz: 0, pan: 0};
 const loadImg = src => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error(src)); i.src = src; });
 async function loadCine() {
   try {
-    const now = sunPos(Date.now()).alt;
-    const order = SKYF.slice().sort((a, b) => Math.abs(a.alt - now) - Math.abs(b.alt - now));
-    [cine.land, cine.haze] = await Promise.all([loadImg("assets/land/land_shade.webp"), loadImg("assets/land/land_haze.webp")]);
-    await Promise.all([...DECKS.map(async d => d.img = await loadImg(d.src)), ...order.map(async f => f.img = await loadImg(f.src))]);
+    cine.meta = await (await fetch("assets/land/land_meta.json")).json();
+    [cine.land, cine.haze] = await Promise.all([loadImg("assets/land/land_ambient.webp"), loadImg("assets/land/land_haze.webp")]);
+    await Promise.all([...DECKS.map(async d => d.img = await loadImg(d.src)), ensureSky()]);
+    if (!skySet) throw new Error("sky frames");
+    if (state.ev) loadSunLayers(sunPos(state.win[0]).az, sunPos(state.win[1]).az);
     cine.ready = true;
   } catch (e) { console.warn("Rendered scenery not found next to the page; using the drawn sky.", e.message); }
 }
@@ -738,16 +814,21 @@ function renderCine(t) {
   const sunVis = 1 - clamp(Math.max(W.cloud_cover_low * (sun.app < 8 ? 1 : .3), L.cloud_cover_low * (sun.app >= 8 ? 1 : .3), W.cloud_cover_mid * .75, L.cloud_cover_high * .25) / 100) * .95;
   const hidden = sun.app + .27 < terrain(sun.az).h;
   const onScreen = sx > -60 && sx < Wd + 60 && sy > -60;
-  const sc = keyed(SUNC, sun.app)[0];
-  const r = Math.max(.27 * V.ppd, 4.5);
+  const sc = sunColour(sun.app, L.aod);
+  // refraction lifts the lower limb more than the upper one, squashing the disc near the horizon
+  const lim = d => sun.alt + d + refraction(sun.alt + d), top = lim(.267), bot = lim(-.267);
+  const r = Math.max(.267 * V.ppd, 4.5), ry = r * (top - bot) / .534, sy2 = cy((top + bot) / 2);
+  const seaDip = HZN ? HZN.dip : 0;
   if (sun.app > -.6 && onScreen) {
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, Wd, cy(seaDip)); ctx.clip();   // the sea hides what has set
     ctx.globalCompositeOperation = "lighter";
     const halo = ctx.createRadialGradient(sx, sy, r * .5, sx, sy, r * 9);
     halo.addColorStop(0, css(sc, .5 * sunVis)); halo.addColorStop(.25, css(sc, .14 * sunVis)); halo.addColorStop(1, css(sc, 0));
     ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(sx, sy, r * 9, 0, 7); ctx.fill();
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = css(mix(sc, [255, 255, 255], .25), sunVis);
-    ctx.beginPath(); ctx.ellipse(sx, sy, r, r * (sun.app < 1.2 ? .86 : 1), 0, 0, 7); ctx.fill();
+    // the disc is added on top, so it is always the brightest thing in frame: overexposed white until low down
+    ctx.fillStyle = css(mix(sc, [255, 255, 255], .25 + .6 * clamp(sun.app / 6)), sunVis);
+    ctx.beginPath(); ctx.ellipse(sx, sy2, r, ry, 0, 0, 7); ctx.fill();
+    ctx.restore();
   }
   // glitter path on the water
   const tt = performance.now() / 1000;
@@ -775,19 +856,31 @@ function renderCine(t) {
   // scenery: Blender shading x ambient light, then aerial perspective using the sky itself as the haze colour
   const fogA = clamp(Math.max((5000 - L.visibility) / 5000, isFog(L) ? .65 : 0));
   const g = offA.getContext("2d"), lb = landBox();
-  g.globalCompositeOperation = "source-over"; g.globalAlpha = 1; g.clearRect(0, 0, Wd, Ht);
+  // build the lit colour on opaque black (so the tints below cannot leak into soft edges), then cut out the land's alpha
+  g.globalCompositeOperation = "source-over"; g.globalAlpha = 1; g.fillStyle = "#000"; g.fillRect(0, 0, Wd, Ht);
   blit(g, cine.land, LANDI.w, LANDI.h, ...lb, false);
   let amb = keyed(AMBIENT, sun.app)[0];
   amb = mix(amb, [lum(amb) * .8, lum(amb) * .8, lum(amb) * .86], ocL * .7).map(v => v * (1 - ocL * .3));
   g.globalCompositeOperation = "multiply"; g.fillStyle = css(amb); g.fillRect(0, 0, Wd, Ht);
   const wet = clamp(L.rain6 / 3 + L.precipitation / 1.5 + (L.relative_humidity_2m > 92 ? .2 : 0));
   if (wet > .03) { g.globalCompositeOperation = "multiply"; g.fillStyle = css(mix([255,255,255],[120,112,110],wet)); g.fillRect(0, cy(-.4), Wd, Ht); }
+  // direct sunlight, tinted by what survives the trip through the air (reddening with air mass and aerosols)
+  const sl = sunLight(sun.app, L.aod).map(v => v * sunVis * 255), layers = sunLayers(sun.az, sun.app);
+  if (layers.length && Math.max(...sl) > 1.5) {
+    const c2 = offC.getContext("2d"), hl = lb.map(v => v * cine.meta.sunScale);
+    // on opaque black, so the tint below cannot leak into the soft edges of the half-resolution layers
+    c2.globalCompositeOperation = "source-over"; c2.globalAlpha = 1; c2.fillStyle = "#000"; c2.fillRect(0, 0, Wd, Ht);
+    c2.globalCompositeOperation = "lighter";
+    for (const [img, w] of layers) { c2.globalAlpha = w; blit(c2, img, img.width, img.height, ...hl, false); }
+    c2.globalAlpha = 1; c2.globalCompositeOperation = "multiply"; c2.fillStyle = css(sl); c2.fillRect(0, 0, Wd, Ht);
+    g.globalCompositeOperation = "lighter"; g.drawImage(offC, 0, 0, Wd, Ht);
+  }
   g.globalCompositeOperation = "destination-in"; blit(g, cine.land, LANDI.w, LANDI.h, ...lb, false);
   const hb = offB.getContext("2d");
   hb.globalCompositeOperation = "source-over"; hb.globalAlpha = 1; hb.clearRect(0, 0, Wd, Ht);
   drawSky(hb, sun);
   hb.globalCompositeOperation = "destination-in";
-  hb.globalAlpha = clamp(.42 + 4 / Math.max(.3, L.visibility / 1000) + fogA * .5, 0, 1);
+  hb.globalAlpha = clamp(.42 + 4 / Math.max(.3, L.visibility / 1000) + fogA * .5 + clamp(((L.aod ?? .1) - .1) * 1.2, -.1, .35), 0, 1);
   blit(hb, cine.haze, LANDI.w, LANDI.h, ...lb, false);
   hb.globalAlpha = 1; hb.globalCompositeOperation = "source-over";
   g.globalCompositeOperation = "source-atop"; g.drawImage(offB, 0, 0, Wd, Ht);
@@ -878,6 +971,8 @@ function currentEveningKey() {
 function selectEvening(key) {
   state.ev = evening(key);
   state.win = [Math.max(state.ev.golden - 3 * HOUR, solarNoon(key) - 3 * HOUR), state.ev.dusk + 45 * MIN];
+  skyWant = skySetFor(state.ev.at.L.aod); ensureSky();
+  loadSunLayers(sunPos(state.win[0]).az, sunPos(state.win[1]).az);
   CLOUDS = makeClouds(parseInt(key.replace(/-/g, "")) % 100000);
   $("tkA").textContent = T(state.win[0]); $("tkB").textContent = T(state.win[1]);
   $("tkS").textContent = "sunset " + T(state.ev.sunset);
@@ -913,8 +1008,10 @@ function frame(nowPerf) {
   $("hudDay").textContent = (state.mode === "live" ? "Live · " : "") + fmtDay.format(state.t);
   const s = r.sun, ter = terrain(s.az);
   let sunTxt;
+  const sea = ter.name === "the sea";
   if (s.app > ter.h + .27) sunTxt = `Sun ${s.app.toFixed(1)}° up · ${Math.round(s.az)}° ${compass(s.az)}`;
-  else if (s.app > -0.6) sunTxt = `Sun behind ${ter.name} · ${Math.round(s.az)}° ${compass(s.az)}`;
+  else if (s.app > ter.h - .27) sunTxt = `Sun ${sea ? "setting into the sea" : "setting behind " + ter.name} · ${Math.round(s.az)}° ${compass(s.az)}`;
+  else if (s.app > -0.6 && !sea) sunTxt = `Sun behind ${ter.name} · ${Math.round(s.az)}° ${compass(s.az)}`;
   else sunTxt = `Sun ${(-s.app).toFixed(1)}° below horizon`;
   const parts = [sunTxt];
   if (r.L.ok) {

@@ -9,5 +9,25 @@
  ],
  "pxPerDeg": 24.0,
  "cameraHeight": 12.0,
- "inukshukBearing": 328.2
+ "inukshukBearing": 328.2,
+ "sunAz": [
+  210,
+  225,
+  240,
+  255,
+  270,
+  285,
+  300,
+  315
+ ],
+ "sunAlt": [
+  20,
+  8,
+  3,
+  1,
+  0,
+  -0.5,
+  -1.0
+ ],
+ "sunScale": 0.5
 }
