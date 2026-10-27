@@ -22,5 +22,5 @@ blender -b --factory-startup -P blender/land.py -- assets/land 24 64
 blender -b --factory-startup -P blender/clouds.py -- assets/clouds
 ```
 
-`land.py` builds the horizon ridges and runs `fg_ebay.py` for the Inukshuk point (shoreline traced from satellite imagery).
+`land.py` builds the horizon ridges and runs `fg_ebay.py` (the Inukshuk point) and `sp_ebay.py` (Stanley Park and the English Bay shore), with shorelines traced from satellite imagery.
 The sky frames are in sun-relative azimuth, so the page slides them to the sun's true bearing for any day of the year.

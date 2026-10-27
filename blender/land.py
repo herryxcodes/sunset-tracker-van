@@ -2,11 +2,12 @@
 #   land_shade.webp  lit colour with alpha (terrain, freighters, the Inukshuk and its point, beach)
 #   land_haze.webp   white, alpha = aerial-perspective amount by distance (0 near, 1 far)
 # World axes: +Y north, +X east, metres. Camera 12 m above the rocks at Rock Balance Point, 68 m south-east of the Inukshuk.
-# Usage: Blender -b --factory-startup -P land.py -- OUTDIR PXPERDEG SAMPLES
+# Usage: Blender -b --factory-startup -P land.py -- OUTDIR PXPERDEG SAMPLES [haze]
 import bpy, bmesh, math, sys, os, json, random
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 OUT, PXD, SAMPLES = argv[0], float(argv[1]), int(argv[2])
+HAZE_ONLY = len(argv) > 3 and argv[3] == "haze"   # re-render just the haze layer
 AZ0, AZ1, ALT0, ALT1 = 200.0, 400.0, -16.0, 8.0   # bearings past 360 wrap to the north-east
 os.makedirs(OUT, exist_ok=True)
 random.seed(4)
@@ -62,7 +63,6 @@ RIDGES = [
         [337,5.6],[340,5.5],[343.4,5.6],[344.7,6.0],[347,5.0],[349,4.5],[352,4.4],[355,4.6],[358,4.9],[362,5.2],[366,5.5],[370,5.8],[374.6,6.0],[378,5.6],[383,6.1],[386,5.6],[390,5.0],[395,4.4],[400,3.9]]),
     ("The Lions", 19500, 1500, 0, 0.0, [[346,4.0],[348.6,4.6],[349.5,5.15],[350.0,4.9],[350.5,4.95],[350.9,5.2],[351.8,4.7],[354,4.0]]),
     ("Point Grey", 8000, 1500, 35, -3.5, [[196,.95],[205,.95],[214,.9],[220,.75],[226,.6],[233,.55],[240,.68],[247,.8],[254,.76],[259,.62],[262,.42],[264.5,.15],[266,0]]),
-    ("Stanley Park", 1300, 400, 45, 0.0, [[314,0],[316,1.4],[320,2.4],[325,2.9],[331,3.1],[338,3.0],[346,3.2],[354,3.4],[362,3.3],[372,3.0]]),
 ]
 def prof(pts, a):
     if a <= pts[0][0] or a >= pts[-1][0]: return 0.0
@@ -120,6 +120,7 @@ for b, dist, L, head in [(258, 4200, 190, 30), (267, 5600, 225, 75), (276, 3800,
         c.scale = (L * 0.07, 13, 4 + random.random() * 3); c.rotation_euler = h.rotation_euler; c.data.materials.append(hull)
 
 exec(open(os.path.join(os.path.dirname(__file__), "fg_ebay.py")).read())
+exec(open(os.path.join(os.path.dirname(__file__), "sp_ebay.py")).read())   # Stanley Park, modelled in 3D
 
 # Daylight to shade the scenery: sun low in the WSW (backlit, as it is all afternoon from this beach)
 world = bpy.data.worlds.new("w"); sc.world = world; world.use_nodes = True
@@ -129,9 +130,10 @@ sky.sun_elevation = math.radians(22); sky.sun_rotation = math.radians(110); sky.
 wl.new(sky.outputs["Color"], wn["Background"].inputs["Color"])
 sc.view_settings.exposure = -4.6
 sc.render.filepath = os.path.join(OUT, "land_shade.webp")
-bpy.ops.render.render(write_still=True); print("RENDERED shade", flush=True)
+if not HAZE_ONLY: bpy.ops.render.render(write_still=True); print("RENDERED shade", flush=True)
 
-# Haze pass: emission = 1 - exp(-distance / 14 km)
+# Haze pass: solid emission = 1 - exp(-distance / 14 km), rendered linear to EXR, then moved into the alpha channel
+# (a see-through haze material would let far objects' haze leak into near ones)
 hz = bpy.data.materials.new("haze"); hz.use_nodes = True
 n = hz.node_tree.nodes; l = hz.node_tree.links
 for x in list(n): n.remove(x)
@@ -139,17 +141,22 @@ camd = n.new("ShaderNodeCameraData"); m1 = n.new("ShaderNodeMath"); m1.operation
 ex = n.new("ShaderNodeMath"); ex.operation = "EXPONENT"; inv = n.new("ShaderNodeMath"); inv.operation = "SUBTRACT"; inv.inputs[0].default_value = 1.0
 em = n.new("ShaderNodeEmission"); outm = n.new("ShaderNodeOutputMaterial")
 l.new(camd.outputs["View Distance"], m1.inputs[0]); l.new(m1.outputs[0], ex.inputs[0]); l.new(ex.outputs[0], inv.inputs[1])
-em.inputs["Color"].default_value = (1, 1, 1, 1)
-tr = n.new("ShaderNodeBsdfTransparent"); mx = n.new("ShaderNodeMixShader")  # alpha = haze amount
-l.new(inv.outputs[0], mx.inputs[0]); l.new(tr.outputs[0], mx.inputs[1]); l.new(em.outputs[0], mx.inputs[2])
-l.new(mx.outputs[0], outm.inputs["Surface"])
+l.new(inv.outputs[0], em.inputs["Color"]); l.new(em.outputs[0], outm.inputs["Surface"])
 for ob in sc.objects:
     if ob.type == "MESH":
         ob.data.materials.clear(); ob.data.materials.append(hz)
 wn["Background"].inputs["Strength"].default_value = 0
 sc.view_settings.view_transform = "Standard"; sc.view_settings.exposure = 0
 sc.cycles.samples = 16
-sc.render.filepath = os.path.join(OUT, "land_haze.webp")
-bpy.ops.render.render(write_still=True); print("RENDERED haze", flush=True)
+sc.render.image_settings.file_format = "OPEN_EXR"; sc.render.image_settings.color_mode = "RGBA"
+tmp = os.path.join(OUT, "_haze.exr"); sc.render.filepath = tmp
+bpy.ops.render.render(write_still=True)
+import numpy as np
+src = bpy.data.images.load(tmp); w, h = src.size
+px = np.array(src.pixels[:], dtype=np.float32).reshape(h, w, 4)
+outpx = np.ones_like(px); outpx[..., 3] = np.clip(px[..., 0], 0, 1) * px[..., 3]
+dst = bpy.data.images.new("haze", w, h, alpha=True); dst.pixels = outpx.ravel()
+dst.filepath_raw = os.path.join(OUT, "land_haze.webp"); dst.file_format = "WEBP"; dst.save()
+os.remove(tmp); print("RENDERED haze", flush=True)
 json.dump({"az": [AZ0, AZ1], "alt": [ALT0, ALT1], "pxPerDeg": PXD, "cameraHeight": CAMH, "inukshukBearing": INUK_BEARING},
           open(os.path.join(OUT, "land_meta.json"), "w"), indent=1)
