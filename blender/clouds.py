@@ -1,6 +1,7 @@
 # Renders volumetric cloud sprites for the page to scatter over each cloud deck and light live:
-#   18 clouds (8 cumulus / stratocumulus heaps for the low deck, 6 altocumulus puffs for the mid deck, 4 soft cirrocumulus
-#   patches for the high deck), each a cube of procedural density (lumpy blobs eroded by noise, flat base) in Cycles.
+#   18 broad cloud masses (8 stratocumulus slabs for the low deck, 6 altocumulus sheets for the mid deck, 4 feathery patches
+#   for the high deck), each a box of procedural density (flattened lobes eroded by noise into ragged edges and holes,
+#   flat base, thin enough at the edges for the sun to glow through) in Cycles.
 # Every cloud is rendered under four lights, saved as opaque colour atlases the page tints and adds up, plus one alpha atlas:
 #   cloud_amb.jpg    skylight only (bright dome above, dark sea below)
 #   cloud_back.jpg   sun low behind the cloud, toward the camera: silver linings, glow through thin parts
@@ -14,7 +15,7 @@ import numpy as np
 
 OUT = sys.argv[sys.argv.index("--") + 1:][0]
 os.makedirs(OUT, exist_ok=True)
-CW, CH, COLS = 384, 192, 6          # sprite cell size (px), atlas columns
+CW, CH, COLS = 512, 128, 4          # sprite cell size (px, a 4 x 1 unit frame), atlas columns
 for o in list(bpy.data.objects): bpy.data.objects.remove(o, do_unlink=True)
 sc = bpy.context.scene
 sc.render.engine = "CYCLES"
@@ -28,9 +29,9 @@ sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage 
 sc.render.image_settings.file_format = "OPEN_EXR"; sc.render.image_settings.color_mode = "RGBA"
 sc.view_settings.view_transform = "Standard"
 
-# camera: orthographic, looking north (+Y) at a 2 x 1 unit frame; cloud bases sit at z = 0, a little above the frame bottom
-BASE_Y = 0.12                        # fraction of the frame height below the base (room for the eroded underside)
-cd = bpy.data.cameras.new("c"); cd.type = "ORTHO"; cd.ortho_scale = 2.0
+# camera: orthographic, looking north (+Y) at a 4 x 1 unit frame; cloud bases sit at z = 0, a little above the frame bottom
+BASE_Y = 0.2                         # fraction of the frame height below the base (room for the eroded underside)
+cd = bpy.data.cameras.new("c"); cd.type = "ORTHO"; cd.ortho_scale = 4.0
 cam = bpy.data.objects.new("c", cd); cam.location = (0, -10, 0.5 - BASE_Y); cam.rotation_euler = (math.radians(90), 0, 0)
 sc.collection.objects.link(cam); sc.camera = cam
 
@@ -51,7 +52,7 @@ LIGHTS = {"amb": None, "back": (0, -1, -0.09), "front": (0, 1, -0.17), "below": 
 ENERGY = {"back": 3.2, "front": 8.0, "below": 4.0}   # sun strength per pass, so each fills the 8-bit range
 
 bpy.ops.mesh.primitive_cube_add(size=1); box = bpy.context.object
-box.scale = (2.0, 1.2, 1.1); box.location = (0, 0, 0.45)
+box.scale = (4.0, 2.0, 1.0); box.location = (0, 0, 0.3)
 
 def cloud_material(blobs, base_soft, erode, dens_scale, seed):
     m = bpy.data.materials.new("cloud"); m.use_nodes = True
@@ -88,7 +89,7 @@ def cloud_material(blobs, base_soft, erode, dens_scale, seed):
     l.new(fb.outputs["Fac"], er.inputs[0])
     sh = n.new("ShaderNodeMath"); sh.operation = "ADD"; l.new(shape, sh.inputs[0]); l.new(er.outputs[0], sh.inputs[1])
     dn = n.new("ShaderNodeMapRange"); dn.interpolation_type = "SMOOTHSTEP"
-    dn.inputs["From Min"].default_value = 0.0; dn.inputs["From Max"].default_value = 0.16; l.new(sh.outputs[0], dn.inputs["Value"])
+    dn.inputs["From Min"].default_value = 0.0; dn.inputs["From Max"].default_value = 0.3; l.new(sh.outputs[0], dn.inputs["Value"])
     # flat, slightly ragged base at z = 0
     sz = n.new("ShaderNodeSeparateXYZ"); l.new(p, sz.inputs[0])
     bs = n.new("ShaderNodeMapRange"); bs.interpolation_type = "SMOOTHSTEP"
@@ -107,18 +108,17 @@ def heap(R, n_blobs, width, height, flat, rmin, rmax):
         dome = math.sqrt(max(0.0, 1 - (x / (width * 1.15)) ** 2))
         r = R.uniform(rmin, rmax) * (0.6 + 0.6 * dome)
         z = r * flat + R.uniform(0, height) * dome
-        out.append((x, R.uniform(-0.15, 0.15), z, r))
+        out.append((x, R.uniform(-0.45, 0.45), z, r))
     return out
 
 R = random.Random(11)
 SPRITES = []
-for i in range(8):   # low: cumulus heaps and stratocumulus rolls
-    tall = i < 5
-    SPRITES.append(("low", heap(R, 14, R.uniform(.55, .78), .42 if tall else .14, .55, .13, .3 if tall else .2), .035, .8, 40, i))
-for i in range(6):   # mid: altocumulus, flatter clumps of small puffs
-    SPRITES.append(("mid", heap(R, 22, R.uniform(.6, .8), .08, .7, .07, .14), .03, .7, 28, 20 + i))
-for i in range(4):   # high: thin, soft cirrocumulus patches
-    SPRITES.append(("high", heap(R, 26, .8, .04, .5, .06, .12), .05, .9, 9, 40 + i))
+for i in range(8):   # low: stratocumulus, broad lumpy slabs with breaks
+    SPRITES.append(("low", heap(R, 34, R.uniform(1.4, 1.8), R.uniform(.1, .22), .45, .14, .3), .05, 1.1, 20, i))
+for i in range(6):   # mid: altocumulus sheets, rows of small rounded elements with holes between
+    SPRITES.append(("mid", heap(R, 48, R.uniform(1.5, 1.8), .05, .55, .07, .15), .04, 1.2, 14, 20 + i))
+for i in range(4):   # high: thin, feathery patches
+    SPRITES.append(("high", heap(R, 44, 1.8, .03, .4, .08, .17), .06, 1.3, 5, 40 + i))
 
 def read_exr(path):
     img = bpy.data.images.load(path); w, h = img.size
@@ -170,5 +170,5 @@ for k, arr in atl.items():
     srgb = np.where(lin <= 0.0031308, lin * 12.92, 1.055 * np.power(np.clip(lin, 0, None), 1 / 2.4) - 0.055)
     save(srgb, f"cloud_{k}.jpg", "JPEG")
 save(np.dstack([np.ones_like(alpha)] * 3 + [alpha]), "cloud_alpha.webp", "WEBP", rgba=True)
-json.dump({"cell": [CW, CH], "frame": [2.0, 1.0], "sprites": meta}, open(os.path.join(OUT, "clouds.json"), "w"), indent=1)
+json.dump({"cell": [CW, CH], "frame": [4.0, 1.0], "sprites": meta}, open(os.path.join(OUT, "clouds.json"), "w"), indent=1)
 print("DONE", flush=True)

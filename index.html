@@ -694,9 +694,9 @@ function sunLayers(az, app) {
 const SKYI = {rel0: -100, alt1: 30, ppd: 16, w: 3840, h: 736};
 const LANDI = {az0: 200, alt1: 20, ppd: 24, w: 4800, h: 864};   // replaced by land_meta.json once loaded
 const DECKS = [ // cloud base height (m), sprite kind, angular width of one cloud (rad), wind multiplier at that height
-  {key: "cloud_cover_high", kind: "high", h: 9000, ang: .22, wind: 3},
-  {key: "cloud_cover_mid", kind: "mid", h: 4000, ang: .17, wind: 2},
-  {key: "cloud_cover_low", kind: "low", h: 1300, ang: .24, wind: 1.3}];
+  {key: "cloud_cover_high", kind: "high", h: 9000, ang: .5, wind: 3},
+  {key: "cloud_cover_mid", kind: "mid", h: 4000, ang: .42, wind: 2},
+  {key: "cloud_cover_low", kind: "low", h: 1300, ang: .5, wind: 1.3}];
 // a deck keeps the sun until it sinks below that deck's own horizon (Earth radius 6371 km), plus refraction on the way in:
 // about 1.7 deg below the horizon at 1.3 km, 2.6 deg at 4 km and 3.6 deg at 9 km
 for (const d of DECKS) d.thr = -(Math.acos(6371e3 / (6371e3 + d.h)) / rad + .57);
@@ -778,7 +778,7 @@ function buildCloudField(seed) {
     for (let r = r0; r < 300000; r *= q) {
       const L = 2.4 * r * Math.sqrt(q), sprites = CS.meta ? CS.meta.sprites.filter(s => s.kind === d.kind) : [];
       const inst = [];
-      for (let k = 0; k < 300; k++) inst.push({x: (R() - .5) * L, y: (R() - .5) * L, u: R(), s: .7 + .6 * R(), sp: sprites[(R() * sprites.length) | 0], flip: R() < .5});
+      for (let k = 0; k < 110; k++) inst.push({x: (R() - .5) * L, y: (R() - .5) * L, u: R(), s: .7 + .6 * R(), sp: sprites[(R() * sprites.length) | 0], flip: R() < .5});
       tiers.push({r, L, inst});
     }
     d.tiers = tiers;
@@ -792,7 +792,7 @@ function relightClouds(sun, L, W) {
   CS.key = key; CS.at = now;
   const below = clamp((1.5 - sun.app) / 2.5), side = 1 - below * .7;
   const amb = keyed(UNLIT, sun.app)[0].map(v => Math.min(255, v * 1.12));
-  const BINS = [[1, 0], [.35, .45], [0, 1]];   // [back, front] weights: toward the sun, side-on, away from it
+  const BINS = [[.6, .15], [.25, .5], [0, 1]];   // [back, front] weights: toward the sun, side-on, away from it
   for (const [di, d] of DECKS.entries()) {
     if (!show[di]) continue;
     const lit = deckLight(sun.app, d.h, L.aod), ramp = clamp((sun.app - d.thr) / .6) * clamp((24 - sun.app) / 14 + .35);
@@ -812,7 +812,7 @@ function relightClouds(sun, L, W) {
     });
   }
 }
-function drawDeck(deck, sun, L, W) {
+function drawDeck(deck, sun, L, W, sunVis) {
   if (!CS.ready || !deck.tiers || Math.max(L[deck.key], W[deck.key]) < 2) return;
   const wdir = ((state.ev && state.ev.at.L.wind_direction_10m) ?? 250) * rad;     // the direction the wind blows from
   const v = (L.wind_speed_10m || 8) / 3.6 * deck.wind * cloudClock, dx = -Math.sin(wdir) * v, dy = -Math.cos(wdir) * v;
@@ -829,20 +829,23 @@ function drawDeck(deck, sun, L, W) {
       let az = Math.atan2(x, y) / rad; az += 360 * Math.round((V.c - az) / 360);
       if (az < azL || az > azR) continue;
       const west = clamp(Math.cos((az - 260) * rad)) * clamp((r - 4000) / 50000);
-      const cov = lerp(Lc, Wc, west), a = clamp((cov - c.u) * 6) * clamp((1.3 - Math.abs(tb)) / .5);
+      const cov = lerp(Lc, Wc, west), a = clamp((cov - c.u) * 16) * clamp((1.3 - Math.abs(tb)) / .12);
       if (a < .02) continue;
       list.push([r, az, a, c, cov]);
     }
     list.sort((p, q) => q[0] - p[0]);
     for (const [r, az, a, c, cov] of list) {
-      const wM = T.r * deck.ang * c.s * (.7 + .7 * cov), drop = .87 * r * r / 12742e3;
+      const wM = T.r * deck.ang * c.s * (.85 + .35 * cov), drop = .87 * r * r / 12742e3;
       const eb = Math.atan((deck.h - 12 - drop) / r) / rad;                // the cloud base
       const wpx = wM / r / rad * V.ppd, hpx = wpx * ch / cw;
       const yb = cy(eb), x0 = cx(az) - wpx / 2, y0 = yb - c.sp.base * hpx;
       if (x0 > Wd || x0 + wpx < 0 || y0 > cy(dip) || yb + hpx < 0) continue;
       const fadeLow = clamp((eb - dip) / 1.2 + .15);                      // thinning into the horizon haze
+      // where the forecast says the sun gets through, the clouds part around it
+      const halfW = wpx / V.ppd / 2, dSun = Math.hypot((az - sun.az) * Math.cos(eb * rad), eb + halfW * .12 - sun.app);
+      const gap = sun.app > -1 ? 1 - sunVis * .85 * clamp(1 - (dSun - 3) / (halfW * .6 + 5)) : 1;
       const d = Math.abs(((az - sun.az + 540) % 360) - 180), bin = d < 35 ? 0 : d < 100 ? 1 : 2;
-      ctx.globalAlpha = a * fadeLow;
+      ctx.globalAlpha = a * fadeLow * gap;
       if (c.flip) { ctx.save(); ctx.translate(x0 + wpx, 0); ctx.scale(-1, 1); ctx.drawImage(c.sp.c[bin], 0, y0, wpx, hpx); ctx.restore(); }
       else ctx.drawImage(c.sp.c[bin], x0, y0, wpx, hpx);
     }
@@ -973,7 +976,7 @@ function renderCine(t) {
   const tt = performance.now() / 1000;
   if (sun.app > -.4 && !hidden && sunVis > .08 && onScreen) drawGlitter(sun, L, sunVis, tt);
   // clouds, high to low
-  if (CS.ready) { relightClouds(sun, L, W); for (const d of DECKS) drawDeck(d, sun, L, W); }
+  if (CS.ready) { relightClouds(sun, L, W); for (const d of DECKS) drawDeck(d, sun, L, W, sunVis); }
   // scenery: Blender shading x ambient light, then aerial perspective using the sky itself as the haze colour
   const fogA = clamp(Math.max((5000 - L.visibility) / 5000, isFog(L) ? .65 : 0));
   const g = offA.getContext("2d"), lb = landBox();
