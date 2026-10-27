@@ -2,7 +2,7 @@
 #   land_ambient.webp  skylit colour with alpha (terrain, freighters, the Inukshuk and its point, beach)
 #   sun/*.webp         direct sunlight for a grid of sun positions (see below)
 #   land_haze.webp     white, alpha = aerial-perspective amount by distance (0 near, 1 far)
-# Run horizon.py first: the terrain comes from the Copernicus GLO-30 grid it writes to blender/cache/.
+# Run city.py and then horizon.py first: the terrain and the city come from what they write to blender/cache/.
 # World axes: +Y north, +X east, metres. Camera 12 m above the rocks at Rock Balance Point, 68 m south-east of the Inukshuk.
 # Usage: Blender -b --factory-startup -P land.py -- OUTDIR PXPERDEG SAMPLES [all|ambient|sun|haze]
 import bpy, bmesh, math, sys, os, json, random
@@ -10,7 +10,7 @@ import bpy, bmesh, math, sys, os, json, random
 argv = sys.argv[sys.argv.index("--") + 1:]
 OUT, PXD, SAMPLES = argv[0], float(argv[1]), int(argv[2])
 MODE = argv[3] if len(argv) > 3 else "all"   # all | ambient | sun | haze: render only that layer
-AZ0, AZ1, ALT0, ALT1 = 200.0, 400.0, -16.0, 8.0   # bearings past 360 wrap to the north-east
+AZ0, AZ1, ALT0, ALT1 = 200.0, 400.0, -16.0, 20.0   # bearings past 360 wrap to the north-east; tall enough for the nearest trees
 os.makedirs(OUT, exist_ok=True)
 random.seed(4)
 CAMH, INUK_BEARING, INUK_DIST = 12.0, 328.2, 68.3   # drone height over Rock Balance Point
@@ -60,7 +60,7 @@ def material(name, rgb, rough=0.9, bump=0.0, scale=40.0):
 # are already lowered for the Earth's curvature (less refraction), so far ridges sit where the eye sees them.
 import numpy as np
 T = np.load(os.path.join(os.path.dirname(__file__), "cache", "terrain.npz"))
-GA, GD, GH, GZ, OWN = T["az"], T["dist"], T["h"], T["z"], T["own"]
+GA, GD, GH, GZ, OWN, CITYG = T["az"], T["dist"], T["h"], T["z"], T["own"], T["city"]
 na, nd = GH.shape
 land = GH > 0.5
 bb, dd = np.meshgrid(np.radians(GA), GD, indexing="ij")
@@ -82,6 +82,7 @@ h = GH.ravel()[used]
 c = np.empty((len(h), 4), np.float32); c[:, 3] = 1
 t = np.clip((h - 1300) / 500, 0, 1)[:, None]
 c[:, :3] = np.array([0.014, 0.022, 0.017]) * (1 - t) + np.array([0.07, 0.068, 0.065]) * t
+c[CITYG.ravel()[used], :3] = (0.05, 0.05, 0.045)    # streets and lawns between the city's buildings
 ca = me.color_attributes.new("Col", "FLOAT_COLOR", "POINT"); ca.data.foreach_set("color", c.ravel())
 for p in me.polygons: p.use_smooth = True
 def terrain_mat(n, l, b):
@@ -130,6 +131,7 @@ for b, dist, L, head in [(258, 4200, 190, 30), (267, 5600, 225, 75), (276, 3800,
 
 exec(open(os.path.join(os.path.dirname(__file__), "fg_ebay.py")).read())
 exec(open(os.path.join(os.path.dirname(__file__), "sp_ebay.py")).read())   # Stanley Park, modelled in 3D
+exec(open(os.path.join(os.path.dirname(__file__), "city_ebay.py")).read())   # the West End and Coal Harbour from survey data
 
 # Lighting is rendered in parts so the page can relight the scenery for any sun position and air quality:
 #   land_ambient.webp       skylight only (a white dome, darker below the horizon), no sun

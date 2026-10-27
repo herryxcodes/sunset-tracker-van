@@ -6,7 +6,7 @@
 # lower than its map height, and the sea horizon dips 0.10 deg below level from 12 m up.
 # Data: Copernicus DEM GLO-30 (c) DLR e.V. 2010-2014 and (c) Airbus Defence and Space GmbH 2014-2018, provided under
 # COPERNICUS by the European Union and ESA. Tiles: https://copernicus-dem-30m.s3.amazonaws.com/
-# Usage (needs numpy + rasterio): python blender/horizon.py DEM_DIR
+# Usage (needs numpy, rasterio and scipy; run city.py first): python blender/horizon.py DEM_DIR
 import sys, os, json, math, glob
 import numpy as np, rasterio
 
@@ -96,8 +96,8 @@ for a in range(230, 315, 5):
 
 # ---------- polar terrain grid for Blender ----------
 GA = np.arange(199.0, 401.0001, 0.06)
-GD = [500.0]
-while GD[-1] < 190000: GD.append(GD[-1] + max(25.0, GD[-1] * 0.004))
+GD = [60.0]
+while GD[-1] < 190000: GD.append(GD[-1] + max(10.0 if GD[-1] < 500 else 25.0, GD[-1] * 0.004))
 GD = np.array(GD)
 bb, dd = np.meshgrid(GA, GD, indexing="ij")
 lat, lon = destination(bb.ravel(), dd.ravel())
@@ -106,8 +106,24 @@ H = sample(lat, lon).reshape(bb.shape)
 sx, sy = math.sin(math.radians(INUK_BEARING)) * INUK_DIST, math.cos(math.radians(INUK_BEARING)) * INUK_DIST
 x, y = dd * np.sin(np.radians(bb)) - sx, dd * np.cos(np.radians(bb)) - sy
 own = (((-330 <= x) & (x <= 150) & (180 <= y) & (y <= 1060)) | ((-1400 <= x) & (x <= 700) & (1040 <= y) & (y <= 4200)) |
-       ((-280 <= x) & (x <= 400) & (260 <= y) & (y <= 1050)) | ((-70 <= x) & (x <= 120) & (-150 <= y) & (y <= 220)))
+       ((-70 <= x) & (x <= 120) & (-150 <= y) & (y <= 220)))
+# In the West End and Coal Harbour the surface model's smeared buildings and trees give way to bare ground, interpolated
+# from the surveyed base elevations of the buildings around each cell; city.py's real buildings and trees stand on it.
+city = np.zeros(H.shape, bool)
+cj = os.path.join(HERE, "cache", "city.json")
+if os.path.exists(cj):
+    from scipy.spatial import cKDTree
+    C = json.load(open(cj))["buildings"]
+    pts = np.array([np.mean(b["ring"], 0) for b in C]); zb = np.array([b["base"] for b in C])
+    cx, cy = dd * np.sin(np.radians(bb)), dd * np.cos(np.radians(bb))
+    cand = (H > 0.5) & ~own & (dd < 3600)
+    dist_k, k = cKDTree(pts).query(np.stack([cx[cand], cy[cand]], 1), 4)
+    ok = dist_k[:, 0] < 150
+    g = np.average(zb[k], axis=1, weights=1 / (dist_k + 5))
+    idx = np.argwhere(cand)[ok]
+    city[idx[:, 0], idx[:, 1]] = True; H[idx[:, 0], idx[:, 1]] = np.maximum(g[ok], 0.6)
+    print("city ground cells", int(city.sum()), flush=True)
 os.makedirs(os.path.join(HERE, "cache"), exist_ok=True)
 np.savez_compressed(os.path.join(HERE, "cache/terrain.npz"), az=GA, dist=GD, h=H.astype(np.float32),
-                    z=(H - drop(dd)).astype(np.float32), own=own, k=K_REFR)
+                    z=(H - drop(dd)).astype(np.float32), own=own, city=city, k=K_REFR)
 print("terrain grid", H.shape, "land cells", int((H > 0.5).sum()), flush=True)

@@ -97,25 +97,9 @@ for gx in range(int(-1400 / SP), int(700 / SP)):
             c = (random.uniform(.18, .3), random.uniform(.1, .16), .02, 1) if random.random() < .28 else (random.uniform(.035, .05), random.uniform(.06, .08), .025, 1)
             add_blob(x, y, z0 + h * .62, r, c)
         count += 1
-# a row of big street trees along Beach Avenue behind English Bay Beach
-for k in range(40):
-    y = 230 + k * 20 + random.uniform(-4, 4)
-    for x in range(-330, 150, 6):
-        if 75 < park_dist(x, y) < 81:
-            add_blob(x + random.uniform(-2, 2), y, park_ground(x, y, 78) + 14, random.uniform(5.5, 7.5), (0.04, 0.065, 0.025, 1)); break
 me = bpy.data.meshes.new("parktrees"); bm.to_mesh(me); bm.free()
 me.materials.append(shader("parktrees", tree_mat)); link(bpy.data.objects.new("parktrees", me))
 print("PARK TREES", count, flush=True)
-
-# West End buildings behind Beach Avenue (low-rise near the water, towers further in)
-tower = bpy.data.materials["tower"] if "tower" in bpy.data.materials else material("tower", (0.12, 0.12, 0.13), 0.5)
-for k in range(70):
-    x, y = random.uniform(-280, 400), random.uniform(260, 1050)
-    d = park_dist(x, y)
-    if d < 95: continue
-    h = random.uniform(12, 30) if d < 180 else random.uniform(30, 85)
-    w = random.uniform(16, 28)
-    box(W(x, y, park_ground(x, y, d) + h / 2), (w, w * random.uniform(.7, 1.3), h), random.uniform(0, 1.5), tower)
 
 # Siwash Rock: the sea stack off the park's west shore, with its lone tree
 bpy.ops.mesh.primitive_cylinder_add(vertices=14, radius=7, depth=16, location=W(-1078, 3268, 7))
